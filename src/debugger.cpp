@@ -1,7 +1,6 @@
 #include "debugger.hpp"
 #include "simulator.hpp"
 
-#include <cctype>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -75,7 +74,9 @@ DebugCommandResult Debugger::handle_command(const std::string& line) {
 
 void Debugger::refresh_breakpoints() {
     recent_breakpoints_.clear();
-    for (const auto addr : simulator_.breakpoints()) recent_breakpoints_.push_back(addr);
+    for (const auto addr : simulator_.breakpoints()) {
+        recent_breakpoints_.push_back(addr);
+    }
 }
 
 void Debugger::print_help() const {
