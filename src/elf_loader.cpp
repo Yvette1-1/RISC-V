@@ -17,6 +17,7 @@ namespace {
 constexpr std::array<std::uint8_t, 4> kElfMagic{0x7fu, 'E', 'L', 'F'};
 constexpr std::uint8_t kElfClass32 = 1;
 constexpr std::uint8_t kElfDataLittleEndian = 1;
+constexpr std::uint8_t kElfVersionCurrent = 1;
 constexpr std::uint16_t kElfMachineRiscv = 243;
 constexpr std::uint32_t kProgramHeaderLoad = 1;
 constexpr std::size_t kElf32HeaderSize = 52;
@@ -67,7 +68,9 @@ bool checked_range(std::size_t base, std::size_t length, std::size_t limit) {
 }
 
 ElfLoadResult fail(std::string message) {
-    return {false, 0, std::move(message)};
+    ElfLoadResult result;
+    result.error = std::move(message);
+    return result;
 }
 
 Elf32Header parse_header(const std::vector<std::uint8_t>& bytes) {
@@ -104,6 +107,20 @@ Elf32ProgramHeader parse_program_header(const std::vector<std::uint8_t>& bytes, 
     return header;
 }
 
+std::uint32_t elf_flags_to_memory_permissions(std::uint32_t flags) {
+    std::uint32_t permissions = MEM_NONE;
+    if ((flags & 0x4u) != 0) {
+        permissions |= MEM_READ;
+    }
+    if ((flags & 0x2u) != 0) {
+        permissions |= MEM_WRITE;
+    }
+    if ((flags & 0x1u) != 0) {
+        permissions |= MEM_EXEC;
+    }
+    return permissions;
+}
+
 bool validate_header(const Elf32Header& header, std::size_t file_size, std::string& error) {
     if (!std::equal(kElfMagic.begin(), kElfMagic.end(), header.ident.begin())) {
         error = "invalid ELF magic";
@@ -115,6 +132,10 @@ bool validate_header(const Elf32Header& header, std::size_t file_size, std::stri
     }
     if (header.ident[5] != kElfDataLittleEndian) {
         error = "only little-endian ELF is supported";
+        return false;
+    }
+    if (header.ident[6] != kElfVersionCurrent || header.version != kElfVersionCurrent) {
+        error = "unsupported ELF version";
         return false;
     }
     if (header.machine != kElfMachineRiscv) {
@@ -137,7 +158,7 @@ bool validate_header(const Elf32Header& header, std::size_t file_size, std::stri
     const auto table_offset = static_cast<std::size_t>(header.program_header_offset);
     const auto entry_size = static_cast<std::size_t>(header.program_header_entry_size);
     const auto entry_count = static_cast<std::size_t>(header.program_header_count);
-    if (entry_count > (std::numeric_limits<std::size_t>::max() / entry_size)) {
+    if (entry_size != 0 && entry_count > (std::numeric_limits<std::size_t>::max() / entry_size)) {
         error = "ELF program header table size overflow";
         return false;
     }
@@ -179,6 +200,10 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         return fail(error);
     }
 
+    ElfLoadResult result;
+    result.ok = true;
+    result.entry_point = elf_header.entry;
+
     bool loaded_segment = false;
     for (std::uint16_t i = 0; i < elf_header.program_header_count; ++i) {
         const auto offset = static_cast<std::size_t>(elf_header.program_header_offset) +
@@ -196,6 +221,11 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         if (!memory.contains(program_header.virtual_addr, program_header.memory_size)) {
             return fail("ELF load segment is outside simulator memory");
         }
+
+        const auto permissions = elf_flags_to_memory_permissions(program_header.flags);
+        if (!memory.map_region({program_header.virtual_addr, program_header.memory_size, permissions, "elf_segment"})) {
+            return fail("failed to map ELF load segment");
+        }
         if (!memory.store_bytes(program_header.virtual_addr,
                                 bytes.data() + program_header.offset,
                                 program_header.file_size)) {
@@ -206,6 +236,12 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
             !memory.fill(program_header.virtual_addr + program_header.file_size, 0, zero_fill_size)) {
             return fail("failed to zero-fill ELF bss segment");
         }
+
+        result.segments.push_back({program_header.virtual_addr,
+                                   program_header.memory_size,
+                                   program_header.file_size,
+                                   permissions,
+                                   program_header.offset});
         loaded_segment = true;
     }
 
@@ -216,7 +252,11 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         return fail("ELF entry point is outside simulator memory");
     }
 
-    return {true, elf_header.entry, {}};
+    return result;
+}
+
+std::uint32_t get_entry_point(const ElfLoadResult& result) {
+    return result.entry_point;
 }
 
 }  // namespace riscv
