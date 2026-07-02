@@ -5,4 +5,7 @@ CMakeFiles/
 Makefile
 Makefile2
 CMakeCache.txt
-progress.marks
+progress.marks"build/" 
+"CMakeFiles/" 
+"*.obj" 
+"*.exe" 
