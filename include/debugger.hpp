@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -8,10 +9,10 @@ namespace riscv {
 
 class Simulator;
 
-struct Breakpoint {
-    std::uint32_t id;
-    std::uint32_t addr;
-    bool enabled;
+struct DebugCommandResult {
+    bool handled = false;
+    bool should_exit = false;
+    std::string message;
 };
 
 class Debugger {
@@ -19,30 +20,20 @@ public:
     explicit Debugger(Simulator& simulator);
 
     void repl();
-
-    /// 供 CPU 执行循环调用：当前 PC 是否有活跃断点
-    bool has_breakpoint(std::uint32_t pc) const;
-
-    /// 供外部查询：是否开启指令跟踪日志
-    bool trace_enabled() const noexcept { return trace_enabled_; }
+    DebugCommandResult handle_command(const std::string& line);
+    void refresh_breakpoints();
 
 private:
-    void print_help();
-    void print_regs();
-    void cmd_step(std::size_t count = 1);
-    void cmd_run();
-    void cmd_memory_examine(std::uint32_t addr, std::size_t count);
-    void cmd_memory_write(std::uint32_t addr, std::uint32_t value);
-    void cmd_breakpoint_add(std::uint32_t addr);
-    void cmd_breakpoint_del(std::size_t index);
-    void cmd_breakpoint_list();
-    void cmd_reset();
-    void cmd_trace(bool on);
+    void print_help() const;
+    void print_registers() const;
+    void print_memory(std::uint32_t addr, std::size_t count) const;
+    void list_breakpoints() const;
+    void add_breakpoint(std::uint32_t addr);
+    void remove_breakpoint(std::uint32_t addr);
+    static bool parse_address(const std::string& token, std::uint32_t& value);
 
     Simulator& simulator_;
-    std::vector<Breakpoint> breakpoints_;
-    std::uint32_t next_bp_id_ = 1;
-    bool trace_enabled_ = false;
+    std::vector<std::uint32_t> recent_breakpoints_;
 };
 
 }  // namespace riscv
