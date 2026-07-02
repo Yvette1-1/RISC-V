@@ -1,0 +1,16 @@
+build/
+CMakeFiles/
+*.obj
+*.exe
+Makefile
+Makefile2
+CMakeCache.txt
+progress.marks"build/" 
+"CMakeFiles/" 
+"*.obj" 
+"*.exe" 
+"build/" 
+"CMakeFiles/" 
+"*.obj" 
+"*.exe" 
+"Makefile*" 

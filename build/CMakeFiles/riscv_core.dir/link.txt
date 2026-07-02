@@ -1,2 +1,0 @@
-C:\Users\savan\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\ar.exe qc libriscv_core.a CMakeFiles/riscv_core.dir/src/debugger.cpp.obj CMakeFiles/riscv_core.dir/src/elf_loader.cpp.obj CMakeFiles/riscv_core.dir/src/memory.cpp.obj CMakeFiles/riscv_core.dir/src/simulator.cpp.obj
-C:\Users\savan\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin\ranlib.exe libriscv_core.a
