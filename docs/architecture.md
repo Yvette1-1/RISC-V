@@ -1,17 +1,140 @@
-# 架构草图
+# 系统架构
 
-## 1. 模块划分
+## 1. 模块划分（5 类 14 个文件）
 
-- `Simulator`：统一调度执行、重置、装载程序
-- `Memory`：字节寻址内存与边界检查
-- `load_elf()`：负责程序映射与入口地址解析
-- `Debugger`：命令行调试控制
+| 模块 | 文件数 | 负责人 | 职责 |
+|---|---|---|---|
+| CPU 核心 | `simulator.cpp`, `riscv_isa.hpp`, `isa.cpp` | A | 取指、译码、执行、写回、PC 更新 |
+| 系统调用 | `simulator.cpp:handle_syscall()` | A | write/read/exit/brk |
+| 内存系统 | `memory.cpp` | B | 虚拟内存映射、权限检查、8/16/32 位访存、批量读写 |
+| ELF 加载器 | `elf_loader.cpp` | B | ELF32 解析、Program Header 遍历、段映射、入口地址 |
+| 调试器 | `debugger.cpp` | C | 14 个命令：断点/单步/寄存器/内存/重置/trace |
+| 主入口 | `main.cpp` | 框架 | 命令行参数解析、Simulator/Debugger 初始化 |
+| 测试 | `tests/` 14 个 .cpp | A+B+C | 单元测试 + 程序级测试 + 边界测试 |
+| 文档 | `docs/` 5 个 .md | C | 架构图、调试器手册、演示脚本、问题清单、回归清单 |
 
-## 2. 先后实现顺序
+## 2. 体系结构图
 
-1. ELF 解析
-2. RV32I 指令解码
-3. M 扩展
-4. syscall
-5. 调试器断点与单步
-6. 可选流水线
+```
+                        ┌──────────────────────┐
+                        │     main.cpp          │
+                        │  入口 / 参数解析       │
+                        └──────┬───────────────┘
+                               │
+              ┌────────────────┼────────────────┐
+              ▼                ▼                ▼
+    ┌─────────────┐   ┌─────────────┐   ┌──────────────┐
+    │  Debugger   │   │  Simulator  │   │  ELF Loader  │
+    │  (C)        │◄──│  (A)        │──▶│  (B)          │
+    │  repl()     │   │  step()     │   │  load_elf()   │
+    │  handle_    │   │  run()      │   │  parse_header │
+    │   command() │   │  reset()    │   │  load_segment │
+    └──────┬──────┘   └──────┬──────┘   └──────┬───────┘
+           │                 │                  │
+           │         ┌───────┼───────┐          │
+           │         ▼       ▼       ▼          │
+           │  ┌──────────┐ ┌──────────┐ ┌──────▼───────┐
+           │  │riscv_isa │ │ Memory   │ │  ElfLoad     │
+           │  │decode()  │ │ (B)      │ │  Result      │
+           │  │get_bits()│ │map/load/ │ │  segments    │
+           │  │sign_ext  │ │store     │ │  entry_point │
+           │  └──────────┘ └──────────┘ └──────────────┘
+           │
+           ▼
+    ┌──────────────┐
+    │  用户输入     │
+    │  stdin       │
+    └──────────────┘
+```
+
+## 3. 执行流程图
+
+```
+  ELF 文件 ──▶ load_elf() ──▶ 解析 ELF Header
+                                    │
+                            遍历 Program Header
+                                    │
+                            映射 .text/.data 到 Memory
+                                    │
+                            返回 entry_point ──▶ pc = entry
+                                                       │
+  ┌────────────────────────────────────────────────────┘
+  ▼
+  run() 执行循环:
+  ┌─────────────────────────────────────────┐
+  │  state == Running/Loaded?               │──── 否 ──▶ 退出
+  │      是                                 │
+  │  has_breakpoint(pc)?                    │──── 是 ──▶ Paused ──▶ 返回调试器
+  │      否                                 │
+  │  fetch(pc) ──▶ decode(inst)             │
+  │       │                                 │
+  │       ├─ ALU 指令 ──▶ 寄存器写回         │
+  │       ├─ Load/Store ──▶ Memory 读写     │
+  │       ├─ Branch/Jump ──▶ 更新 PC        │
+  │       ├─ ecall ──▶ handle_syscall()     │
+  │       │    ├─ write ──▶ stdout          │
+  │       │    ├─ read  ──▶ stdin           │
+  │       │    ├─ exit  ──▶ Exited          │
+  │       │    └─ brk   ──▶ 调整堆          │
+  │       └─ ebreak ──▶ Halted              │
+  │       │                                 │
+  │  pc = next_pc                           │
+  │  executed++                             │
+  └─────────────────────────────────────────┘
+```
+
+## 4. 虚拟内存布局
+
+```
+  ┌─────────────────┐ 0x00000000
+  │                 │
+  │  未映射区域      │
+  │                 │
+  ├─────────────────┤ text_vaddr (ELF PT_LOAD)
+  │  .text (代码段)  │ ← R+X
+  ├─────────────────┤
+  │  .rodata (只读)  │ ← R
+  ├─────────────────┤
+  │  .data (数据段)  │ ← R+W
+  ├─────────────────┤
+  │  .bss (零初始化) │ ← R+W（file_size → memory_size 填零）
+  ├─────────────────┤ heap_base (~0x7ffe0000 - 1M)
+  │                 │
+  │  Heap (堆)      │ ← brk() 向上增长
+  │                 │
+  ├─────────────────┤ stack_top (0x7fff0000)
+  │                 │
+  │  Stack (栈)     │ ← 向下增长（1MB）
+  │                 │
+  └─────────────────┘ memory_size (64MB default)
+```
+
+## 5. 调试器命令交互流程
+
+```
+  用户输入 "si 3"
+       │
+       ▼
+  repl() ──▶ handle_command("si 3")
+       │
+       ├─ tokenize → cmd="si", arg="3"
+       ├─ 循环 3 次 simulator_.step()
+       │    └─ 每步失败 → 立即停止，返回错误消息
+       ├─ print_registers() → 输出 32 寄存器 + PC
+       └─ 返回 {handled=true, should_exit=false, message=""}
+```
+
+## 6. 冻结接口
+
+| 接口 | 提供方 | 消费方 |
+|---|---|---|
+| `Simulator::step()` | A | C（si 命令） |
+| `Simulator::run()` | A | C（c 命令） |
+| `Simulator::pc() / regs()` | A | C（regs 命令） |
+| `Simulator::memory()` | B | C（x 命令） |
+| `Simulator::add/remove/has_breakpoint()` | A | C（b/del 命令） |
+| `Simulator::set_trace_enabled()` | A | C（trace 命令） |
+| `Simulator::status()` | A | C（c 命令后状态显示） |
+| `load_elf()` | B | A（Simulator::load_program） |
+| `Memory::load8/16/32 / store8/16/32` | B | A + C |
+| `Debugger::handle_command()` | C | main.cpp |

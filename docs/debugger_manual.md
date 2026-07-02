@@ -2,200 +2,143 @@
 
 ## 概述
 
-RISC-V 调试器是一个交互式命令行工具，用于控制模拟器执行、检查寄存器和内存状态、管理断点。
+RISC-V 调试器是交互式命令行工具，通过 `handle_command()` 方法处理用户输入、控制模拟器执行、查看寄存器与内存状态。
 
-## 启动方式
+## 架构说明
 
-```bash
-# 无参数启动（空模拟器）
-./build/riscv_sim
-
-# 加载 ELF 程序
-./build/riscv_sim examples/hello.elf
+```
+用户输入 → repl() → handle_command() → 命令分发
+                                         ├─ print_registers()
+                                         ├─ print_memory()
+                                         ├─ list_breakpoints()
+                                         ├─ add/remove_breakpoint()
+                                         ├─ simulator_.step() / run() / reset()
+                                         └─ 返回 DebugCommandResult {handled, should_exit, message}
 ```
 
-启动后进入 `RISC-V Debugger Shell` 交互提示符。
+`DebugCommandResult` 结构体：
 
-## 命令详解
+```cpp
+struct DebugCommandResult {
+    bool handled = false;    // 命令是否被识别
+    bool should_exit = false; // 是否退出 REPL
+    std::string message;     // 确认消息或错误提示
+};
+```
+
+- `handled=true` 且 `message` 为空 → 命令直接输出（如 `regs`）
+- `handled=true` 且 `message` 非空 → 由 `repl()` 打印 message
+- `should_exit=true` → `repl()` 退出循环
+
+## 所有命令
 
 ### `help` / `h`
 
-显示完整命令列表和用法示例。
+打印命令列表。
 
 ### `quit` / `q`
 
-退出调试器。
-
----
+退出调试器。返回 `{true, true, ""}`。
 
 ### `regs` / `info r`
 
-显示全部 32 个通用寄存器（x0–x31）和 PC。
+打印全部 32 个寄存器（x0–x31）+ ABI 名称 + PC。
 
-输出格式：`x<编号>(<ABI名>)=0x<值>`
-
+**输出格式**：
 ```
 PC  = 0x0001012c
 
-x 0(zero)=0x00000000  x16(a6  )=0x00000000  
-x 1(ra  )=0x00000000  x17(a7  )=0x00000000  
-x 2(sp  )=0x80000000  x18(s2  )=0x00000000  
+x 0(zero)=0x00000000  x16(a6  )=0x00000000
 ...
-x15(a5  )=0x00000000  x31(t6  )=0x00000000  
+x15(a5  )=0x00000000  x31(t6  )=0x00000000
 ```
-
-`x0` 永远为 0（RISC-V 规范）。
-
----
-
-### `si [N]` / `step [N]` / `s [N]`
-
-单步执行指令。
-
-- 不带参数：执行 1 条指令
-- 带参数 `si 5`：连续执行 5 条，每步都检查返回状态
-
-步进完成后自动打印寄存器状态。如果中途 `step()` 返回 `false`（例如 CPU 未实现该指令或停机），会报错并提前终止。
-
----
-
-### `c` / `run`
-
-继续执行，直到：
-
-1. 遇到断点（CPU 执行循环调用 `has_breakpoint()`）
-2. 程序正常退出（`exit` syscall）
-3. 程序执行 `ebreak`
-4. `run()` 内部停止条件触发
-
----
-
-### `x <addr> [count]`
-
-查看内存内容（hex dump）。
-
-```
-> x 0x10000 32
-0x00010000  00 00 00 00 12 34 56 78 ff ff 00 00 00 00 00 00  |......4Vx........|
-0x00010010  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  |................|
-```
-
-- 地址自动对齐到 16 字节行边界
-- `??` 表示该地址不可读（越界）
-- 右侧显示可打印 ASCII 字符
-
-### `x <addr>=<value>`
-
-向内存地址写入 32 位值。
-
-```
-> x 0x20000=0xdeadbeef
-Wrote 0xdeadbeef to 0x00020000
-```
-
----
-
-### `b <addr>` / `break <addr>`
-
-在指定地址设置断点。
-
-```
-> b 0x1012c
-Breakpoint #1 set at 0x0001012c
-```
-
-- 自动检查地址重复（同地址不会设两次）
-- 断点 ID 自增，全局唯一
 
 ### `info b`
 
-列出所有断点。
+列出所有断点。无断点时显示 "No breakpoints."。
 
-```
-> info b
-Breakpoints (2):
-  [0] #1  0x0001012c  enabled
-  [1] #2  0x00010140  enabled
-```
+### `si [N]` / `step [N]` / `s [N]`
 
-- `[索引]` 用于 `del` 删除
-- `#ID` 为全局唯一编号
+单步执行 N 条指令。不传参数默认 1 条。
 
-### `del <n>` / `d <n>`
+- 每步调用 `simulator_.step()`
+- 步进失败时立即停止，返回错误信息（含 `last_error()`）
+- 完成后自动打印寄存器状态
 
-按索引删除断点。
+**错误示例**：`si: stopped early at step 1/3 — simulator is not ready`
 
-```
-> del 0
-Deleted breakpoint #1 at 0x0001012c
-```
+### `c` / `run`
 
----
+继续执行直到：
+1. 命中活跃断点（CPU 循环中 `has_breakpoint(pc)` 返回 true）
+2. 程序正常退出（`exit` syscall）
+3. 停机指令（`ebreak`）
+4. 执行错误（非法指令等）
+
+停止后打印状态和 PC，同时输出寄存器快照。
+
+### `x <addr> [count]`
+
+内存 hex dump（16 字节对齐行）。
+
+- 不传 count 默认 16 字节
+- `??` 表示越界或未映射地址
+- 右侧 ASCII 列，不可打印字符显示 `.`
+
+### `x <addr>=<value>`
+
+向内存地址写入 32 位值。小端序存储。
+
+### `b <addr>` / `break <addr>`
+
+在指定地址设断点。由 `Simulator::add_breakpoint()` 管理，重复地址会拒绝。
+
+### `del <n>` / `d <n>` / `delete <n>`
+
+按索引删除断点。索引来自 `info b` 列表。
 
 ### `trace on` / `trace off`
 
-开启或关闭指令级执行跟踪。开启后，每次 `si` 都会打印每一步的 PC。
-
-```
-> trace on
-Instruction trace: ON
-> si 3
-[info]  stepping 3 instruction(s)...
-[trace] step[1/3] pc=0x00010130
-[trace] step[2/3] pc=0x00010134
-[trace] step[3/3] pc=0x00010138
-```
-
----
+开关指令执行跟踪。状态由 `Simulator::set_trace_enabled()` 保存到 `SimulatorConfig::enable_trace`。
 
 ### `reset`
 
-重置模拟器状态：
-
-- 寄存器清零、PC 归零
-- 清除所有断点
-- 关闭 trace
-- 保留加载的程序（需重新 `load_program` 的话由上层决定）
+重置模拟器状态：寄存器清零、PC 归零、清除断点、清除错误。
 
 ---
 
-## 错误提示说明
+## 提供给 A 的公开接口
 
-调试器对以下情况给出明确错误提示：
-
-- 缺少必需参数：`x: missing argument — usage: x <addr> [count]`
-- 无效地址格式：`x: invalid address 'xyz' — expected hex, e.g. x 0x1000`
-- 断点索引越界：`del: breakpoint [999] out of range — 2 breakpoint(s) exist, valid range: [0, 1]`
-- 未知命令：`unknown command: 'foo' — type 'help' for available commands`
-
-## 接口约定（供 A 成员）
-
-调试器提供以下公开方法供 CPU 执行循环调用：
+调试器通过 `Simulator` 访问一切状态。A 成员只需保证以下接口正确：
 
 ```cpp
-// 头文件: include/debugger.hpp
-
-// 查询 PC 处是否有活跃断点
-bool has_breakpoint(std::uint32_t pc) const;
-
-// 查询是否开启指令跟踪
-bool trace_enabled() const noexcept;
+// 已在 simulator.hpp 中定义：
+bool Simulator::step();                         // 单步执行
+void Simulator::run(std::size_t max_steps);     // 连续运行
+bool Simulator::reset();                        // 重置
+uint32_t Simulator::pc() const;                 // 当前 PC
+const uint32_t* Simulator::regs() const;        // 寄存器数组
+Memory& Simulator::memory();                    // 内存访问
+bool Simulator::add_breakpoint(uint32_t addr);  // 添加断点
+bool Simulator::remove_breakpoint(uint32_t addr); // 删除断点
+bool Simulator::has_breakpoint(uint32_t addr) const; // 断点检查
+const vector<uint32_t>& Simulator::breakpoints() const; // 断点列表
+void Simulator::set_trace_enabled(bool);        // trace 开关
+SimulatorStatus Simulator::status() const;      // 状态查询
 ```
 
-A 在 `Simulator::run()` 中的用法示例：
+---
 
-```cpp
-void Simulator::run(std::size_t max_steps) {
-    std::size_t count = 0;
-    while (!halt_) {
-        if (max_steps > 0 && count >= max_steps) break;
-        // ★ 断点检查
-        if (debugger_ && debugger_->has_breakpoint(pc_)) {
-            halt_ = true;  // 或返回原因码
-            break;
-        }
-        step();
-        count++;
-    }
-}
-```
+## 错误处理设计
+
+所有非法输入返回明确错误提示，程序不崩溃：
+
+| 场景 | 返回消息 |
+|---|---|
+| 空命令 | 静默忽略 |
+| 未知命令 | `unknown command` |
+| 缺参数 | `b: missing address` / `trace: missing argument` 等 |
+| 非法格式 | `b: invalid address` / `si: invalid count 'abc'` 等 |
+| 越界 | `del: out of range` |
+| 写失败 | `x: write failed at 0x... — address out of range` |
+| 步进失败 | `si: stopped early at step N/M — <error from simulator>` |
