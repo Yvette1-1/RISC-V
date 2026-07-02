@@ -1,0 +1,8 @@
+build/
+CMakeFiles/
+*.obj
+*.exe
+Makefile
+Makefile2
+CMakeCache.txt
+progress.marks
