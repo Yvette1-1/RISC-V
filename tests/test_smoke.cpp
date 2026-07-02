@@ -74,13 +74,51 @@ std::filesystem::path write_minimal_elf32() {
 
 int main() {
     riscv::Memory memory(1024);
-    assert(memory.store32(0, 0x12345678u));
+    assert(memory.size() == 1024);
+    assert(memory.contains(0));
+    assert(memory.contains(1023));
+    assert(memory.contains(1020, 4));
+    assert(!memory.contains(1024));
+    assert(!memory.contains(1021, 4));
+
+    std::uint8_t value8 = 0;
+    assert(memory.store8(7, 0xabu));
+    assert(memory.load8(7, value8));
+    assert(value8 == 0xabu);
+    assert(!memory.store8(1024, 0xffu));
+    assert(!memory.load8(1024, value8));
+
+    std::uint16_t value16 = 0;
+    assert(memory.store16(8, 0x1234u));
+    assert(memory.load16(8, value16));
+    assert(value16 == 0x1234u);
+    assert(memory.load8(8, value8));
+    assert(value8 == 0x34u);
+    assert(memory.load8(9, value8));
+    assert(value8 == 0x12u);
+    assert(!memory.store16(1023, 0xffffu));
+    assert(!memory.load16(1023, value16));
 
     std::uint32_t value = 0;
-    assert(memory.load32(0, value));
+    assert(memory.store32(12, 0x12345678u));
+    assert(memory.load32(12, value));
     assert(value == 0x12345678u);
+    assert(memory.load8(12, value8));
+    assert(value8 == 0x78u);
+    assert(memory.load8(15, value8));
+    assert(value8 == 0x12u);
     assert(!memory.load32(1021, value));
     assert(!memory.store32(1021, value));
+
+    const std::uint8_t bytes[] = {1u, 2u, 3u, 4u};
+    assert(memory.store_bytes(100, bytes, sizeof(bytes)));
+    assert(memory.load32(100, value));
+    assert(value == 0x04030201u);
+    assert(!memory.store_bytes(1022, bytes, sizeof(bytes)));
+    assert(memory.fill(100, 0xa5u, sizeof(bytes)));
+    assert(memory.load32(100, value));
+    assert(value == 0xa5a5a5a5u);
+    assert(!memory.fill(1022, 0, sizeof(bytes)));
 
     const auto elf_path = write_minimal_elf32();
     riscv::Memory elf_memory(4096);
