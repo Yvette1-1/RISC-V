@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/1-RISC-V/RISC-V/build/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

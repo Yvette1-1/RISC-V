@@ -496,6 +496,10 @@ bool Simulator::has_breakpoint(std::uint32_t addr) const {
     return std::find(breakpoints_.begin(), breakpoints_.end(), addr) != breakpoints_.end();
 }
 
+const std::vector<std::uint32_t>& Simulator::breakpoints() const noexcept {
+    return breakpoints_;
+}
+
 const std::string& Simulator::program_path() const noexcept {
     return config_.program_path;
 }

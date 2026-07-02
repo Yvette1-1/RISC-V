@@ -43,6 +43,7 @@ public:
     bool add_breakpoint(std::uint32_t addr);
     bool remove_breakpoint(std::uint32_t addr);
     bool has_breakpoint(std::uint32_t addr) const;
+    const std::vector<std::uint32_t>& breakpoints() const noexcept;
 
     const std::string& program_path() const noexcept;
     const std::string& last_error() const noexcept;
