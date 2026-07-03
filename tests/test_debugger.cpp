@@ -17,6 +17,12 @@ int main() {
     result = dbg.handle_command("regs");
     assert(result.handled);
 
+    result = dbg.handle_command("step");
+    assert(result.handled);
+
+    result = dbg.handle_command("continue");
+    assert(result.handled);
+
     result = dbg.handle_command("trace on");
     assert(result.handled);
 

@@ -43,6 +43,8 @@ struct Elf32ProgramHeaderDisk {
 #pragma pack(pop)
 
 constexpr std::uint32_t PT_LOAD = 1u;
+constexpr std::uint32_t SHT_SYMTAB = 2u;
+constexpr std::uint32_t SHT_STRTAB = 3u;
 
 bool valid_ident(const Elf32HeaderDisk& hdr) {
     return hdr.ident[0] == 0x7f && hdr.ident[1] == 'E' && hdr.ident[2] == 'L' && hdr.ident[3] == 'F' &&
@@ -56,30 +58,37 @@ bool safe_add(std::uint32_t a, std::uint32_t b, std::uint32_t& out) {
     return true;
 }
 
+std::uint32_t read_u32(const std::uint8_t* p) {
+    return static_cast<std::uint32_t>(p[0]) |
+           (static_cast<std::uint32_t>(p[1]) << 8) |
+           (static_cast<std::uint32_t>(p[2]) << 16) |
+           (static_cast<std::uint32_t>(p[3]) << 24);
+}
+
 }  // namespace
 
 ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        return {false, 0u, {}, "failed to open ELF file"};
+        return {false, 0u, {}, "failed to open ELF file", 0u, 0u};
     }
 
     Elf32HeaderDisk hdr{};
     in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
     if (!in) {
-        return {false, 0u, {}, "failed to read ELF header"};
+        return {false, 0u, {}, "failed to read ELF header", 0u, 0u};
     }
     if (!valid_ident(hdr)) {
-        return {false, 0u, {}, "invalid ELF magic"};
+        return {false, 0u, {}, "invalid ELF magic", 0u, 0u};
     }
     if (hdr.machine != 243 || hdr.version != 1) {
-        return {false, 0u, {}, "unsupported ELF target"};
+        return {false, 0u, {}, "unsupported ELF target", 0u, 0u};
     }
     if (hdr.ehsize < sizeof(Elf32HeaderDisk) || hdr.phentsize < sizeof(Elf32ProgramHeaderDisk)) {
-        return {false, 0u, {}, "corrupt ELF header sizes"};
+        return {false, 0u, {}, "corrupt ELF header sizes", 0u, 0u};
     }
     if (hdr.phnum == 0) {
-        return {false, 0u, {}, "ELF has no program headers"};
+        return {false, 0u, {}, "ELF has no program headers", 0u, 0u};
     }
 
     const auto file_pos = in.tellg();
@@ -93,62 +102,104 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
 
     in.seekg(static_cast<std::streamoff>(hdr.phoff), std::ios::beg);
     if (!in) {
-        return {false, 0u, {}, "failed to seek program headers"};
+        return {false, 0u, {}, "failed to seek program headers", 0u, 0u};
     }
+
+    std::uint32_t symtab_off = 0, symtab_size = 0, symtab_entsize = 0;
+    std::uint32_t strtab_off = 0, strtab_size = 0;
 
     for (std::uint16_t i = 0; i < hdr.phnum; ++i) {
         Elf32ProgramHeaderDisk ph{};
         in.read(reinterpret_cast<char*>(&ph), sizeof(ph));
         if (!in) {
-            return {false, 0u, {}, "failed to read program header"};
+            return {false, 0u, {}, "failed to read program header", 0u, 0u};
         }
-        if (ph.type != PT_LOAD) {
+        if (ph.type == PT_LOAD) {
+            if (ph.memsz < ph.filesz) {
+                return {false, 0u, {}, "ELF segment memsz smaller than filesz", 0u, 0u};
+            }
+
+            std::uint32_t end_vaddr = 0;
+            if (!safe_add(ph.vaddr, ph.memsz, end_vaddr)) {
+                return {false, 0u, {}, "ELF segment address overflow", 0u, 0u};
+            }
+            std::uint32_t end_offset = 0;
+            if (!safe_add(ph.offset, ph.filesz, end_offset)) {
+                return {false, 0u, {}, "ELF file offset overflow", 0u, 0u};
+            }
+            if (static_cast<std::uint64_t>(end_offset) > static_cast<std::uint64_t>(file_size)) {
+                return {false, 0u, {}, "ELF segment extends past end of file", 0u, 0u};
+            }
+            if (ph.memsz > memory.size()) {
+                return {false, 0u, {}, "ELF segment does not fit in memory", 0u, 0u};
+            }
+            if (!memory.map_region({ph.vaddr, ph.memsz, ph.flags, "segment"})) {
+                return {false, 0u, {}, "failed to map ELF segment", 0u, 0u};
+            }
+
+            const auto cur = in.tellg();
+            in.seekg(static_cast<std::streamoff>(ph.offset), std::ios::beg);
+            if (!in) {
+                return {false, 0u, {}, "failed to seek segment", 0u, 0u};
+            }
+            std::vector<std::uint8_t> buf(ph.filesz);
+            if (ph.filesz != 0) {
+                in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+                if (!in) {
+                    return {false, 0u, {}, "failed to read segment data", 0u, 0u};
+                }
+                std::memcpy(memory.data() + ph.vaddr, buf.data(), buf.size());
+            }
+            if (ph.memsz > ph.filesz) {
+                std::memset(memory.data() + ph.vaddr + ph.filesz, 0, ph.memsz - ph.filesz);
+            }
+            in.seekg(cur);
+            result.segments.push_back(ElfSegment{ph.vaddr, ph.memsz, ph.filesz, ph.flags, ph.offset});
             continue;
         }
-        if (ph.memsz < ph.filesz) {
-            return {false, 0u, {}, "ELF segment memsz smaller than filesz"};
+        if (ph.type == SHT_SYMTAB) {
+            symtab_off = ph.offset;
+            symtab_size = ph.filesz;
+            symtab_entsize = ph.align ? ph.align : 16u;
         }
+    }
 
-        std::uint32_t end_vaddr = 0;
-        if (!safe_add(ph.vaddr, ph.memsz, end_vaddr)) {
-            return {false, 0u, {}, "ELF segment address overflow"};
-        }
-
-        std::uint32_t end_offset = 0;
-        if (!safe_add(ph.offset, ph.filesz, end_offset)) {
-            return {false, 0u, {}, "ELF file offset overflow"};
-        }
-        if (static_cast<std::uint64_t>(end_offset) > static_cast<std::uint64_t>(file_size)) {
-            return {false, 0u, {}, "ELF segment extends past end of file"};
-        }
-        if (ph.memsz > memory.size()) {
-            return {false, 0u, {}, "ELF segment does not fit in memory"};
-        }
-        if (!memory.map_region({ph.vaddr, ph.memsz, ph.flags, "segment"})) {
-            return {false, 0u, {}, "failed to map ELF segment"};
-        }
-
-        const auto cur = in.tellg();
-        in.seekg(static_cast<std::streamoff>(ph.offset), std::ios::beg);
-        if (!in) {
-            return {false, 0u, {}, "failed to seek segment"};
-        }
-
-        std::vector<std::uint8_t> buf(ph.filesz);
-        if (ph.filesz != 0) {
-            in.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
-            if (!in) {
-                return {false, 0u, {}, "failed to read segment data"};
+    if (symtab_off != 0 && strtab_off == 0) {
+        // second pass to pick up the first STRTAB if present
+        in.seekg(static_cast<std::streamoff>(hdr.phoff), std::ios::beg);
+        for (std::uint16_t i = 0; i < hdr.phnum; ++i) {
+            Elf32ProgramHeaderDisk ph{};
+            in.read(reinterpret_cast<char*>(&ph), sizeof(ph));
+            if (!in) break;
+            if (ph.type == SHT_STRTAB) {
+                strtab_off = ph.offset;
+                strtab_size = ph.filesz;
+                break;
             }
-            std::memcpy(memory.data() + ph.vaddr, buf.data(), buf.size());
         }
+    }
 
-        if (ph.memsz > ph.filesz) {
-            std::memset(memory.data() + ph.vaddr + ph.filesz, 0, ph.memsz - ph.filesz);
+    if (symtab_off != 0 && strtab_off != 0 && symtab_size >= symtab_entsize && strtab_size > 0) {
+        std::vector<std::uint8_t> strtab(strtab_size);
+        in.seekg(static_cast<std::streamoff>(strtab_off), std::ios::beg);
+        in.read(reinterpret_cast<char*>(strtab.data()), static_cast<std::streamsize>(strtab.size()));
+        if (in) {
+            const std::size_t count = symtab_size / symtab_entsize;
+            std::vector<std::uint8_t> sym(symtab_entsize);
+            in.seekg(static_cast<std::streamoff>(symtab_off), std::ios::beg);
+            for (std::size_t i = 0; i < count; ++i) {
+                in.read(reinterpret_cast<char*>(sym.data()), static_cast<std::streamsize>(sym.size()));
+                if (!in) break;
+                if (sym.size() < 16) continue;
+                const auto st_name = read_u32(sym.data());
+                const auto st_value = read_u32(sym.data() + 4);
+                if (st_name < strtab.size()) {
+                    const char* name = reinterpret_cast<const char*>(strtab.data() + st_name);
+                    if (std::strcmp(name, "tohost") == 0) result.tohost = st_value;
+                    if (std::strcmp(name, "fromhost") == 0) result.fromhost = st_value;
+                }
+            }
         }
-
-        in.seekg(cur);
-        result.segments.push_back(ElfSegment{ph.vaddr, ph.memsz, ph.filesz, ph.flags, ph.offset});
     }
 
     return result;
