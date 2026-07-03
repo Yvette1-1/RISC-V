@@ -1,16 +1,11 @@
+# 编译构建产物
 build/
 CMakeFiles/
+CMakeCache.txt
+progress.marks
 *.obj
 *.exe
-Makefile
-Makefile2
-CMakeCache.txt
-progress.marks"build/" 
-"CMakeFiles/" 
-"*.obj" 
-"*.exe" 
-"build/" 
-"CMakeFiles/" 
-"*.obj" 
-"*.exe" 
-"Makefile*" 
+Makefile*
+
+# 本地测试套件，不上传仓库
+tests/riscv-tests/

@@ -21,6 +21,8 @@ struct ElfLoadResult {
     std::uint32_t entry_point = 0;
     std::vector<ElfSegment> segments;
     std::string error;
+    std::uint32_t tohost = 0;
+    std::uint32_t fromhost = 0;
 };
 
 ElfLoadResult load_elf(const std::string& path, Memory& memory);

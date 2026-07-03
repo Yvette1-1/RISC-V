@@ -1,7 +1,6 @@
 #include "elf_loader.hpp"
 #include "memory.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +21,7 @@ constexpr std::uint16_t kElfMachineRiscv = 243;
 constexpr std::uint32_t kProgramHeaderLoad = 1;
 constexpr std::size_t kElf32HeaderSize = 52;
 constexpr std::size_t kElf32ProgramHeaderSize = 32;
+constexpr std::uint32_t kDefaultLoadAddress = 0x1000;
 
 struct Elf32Header {
     std::array<std::uint8_t, 16> ident{};
