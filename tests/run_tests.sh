@@ -2,15 +2,16 @@
 # ============================================================
 # RISC-V 模拟器自动化测试脚本
 # 用法: bash tests/run_tests.sh [--verbose] [--filter <name>]
+#
+# 先 cmake 构建，再跑此脚本：
+#   cd build && cmake .. -G "MinGW Makefiles" && cmake --build .
+#   bash ../tests/run_tests.sh --verbose
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_DIR/build"
-SIM_BIN="$BUILD_DIR/riscv_sim"
-SMOKE_BIN="$BUILD_DIR/riscv_smoke_test"
-EXAMPLES_DIR="$PROJECT_DIR/examples"
 
 PASSED=0
 FAILED=0
@@ -35,162 +36,155 @@ echo ""
 
 # ── 辅助函数 ──────────────────────────────────────────────
 
-run_test() {
+run_exe_test() {
     local name="$1"
-    local cmd="$2"
-    local expected_exit="${3:-0}"
+    local exe="$BUILD_DIR/$2"
 
     if [[ -n "$FILTER" && "$name" != *"$FILTER"* ]]; then
-        ((SKIPPED++))
-        echo "  SKIP  $name (filtered)"
+        SKIPPED=$((SKIPPED + 1))
         return
+    fi
+
+    if [[ ! -f "$exe" ]] && [[ ! -f "$exe.exe" ]]; then
+        # try with .exe extension
+        if [[ -f "$exe.exe" ]]; then
+            exe="$exe.exe"
+        else
+            echo "  SKIP  $name (binary not found: $exe — build first)"
+            SKIPPED=$((SKIPPED + 1))
+            return
+        fi
     fi
 
     if [[ "$VERBOSE" -eq 1 ]]; then
         echo "── $name ──"
-        echo "  CMD: $cmd"
+        echo "  RUN: $exe"
     fi
 
-    set +e
-    eval "$cmd" > "$BUILD_DIR/.test_stdout" 2> "$BUILD_DIR/.test_stderr"
-    local actual_exit=$?
-    set -e
-
-    if [[ $actual_exit -eq $expected_exit ]]; then
-        ((PASSED++))
+    if "$exe" > /dev/null 2>&1; then
+        PASSED=$((PASSED + 1))
         echo "  PASS  $name"
     else
-        ((FAILED++))
-        echo "  FAIL  $name (exit code: $actual_exit, expected: $expected_exit)"
+        FAILED=$((FAILED + 1))
+        echo "  FAIL  $name (exit code: $?)"
         if [[ "$VERBOSE" -eq 1 ]]; then
-            echo "  --- stdout ---"
-            cat "$BUILD_DIR/.test_stdout"
-            echo "  --- stderr ---"
-            cat "$BUILD_DIR/.test_stderr"
+            "$exe" 2>&1 || true
         fi
     fi
 }
 
-# ── 1. 单元测试 ───────────────────────────────────────────
+run_pipe_test() {
+    local name="$1"
+    local input="$2"
+    local exe="$BUILD_DIR/$3"
 
-echo "[1] Unit Tests"
+    if [[ -n "$FILTER" && "$name" != *"$FILTER"* ]]; then
+        SKIPPED=$((SKIPPED + 1))
+        return
+    fi
+
+    if [[ ! -f "$exe" ]] && [[ ! -f "$exe.exe" ]]; then
+        if [[ -f "$exe.exe" ]]; then
+            exe="$exe.exe"
+        else
+            echo "  SKIP  $name (binary not found: $exe)"
+            SKIPPED=$((SKIPPED + 1))
+            return
+        fi
+    fi
+
+    if printf '%b' "$input" | "$exe" > /dev/null 2>&1; then
+        PASSED=$((PASSED + 1))
+        echo "  PASS  $name"
+    else
+        FAILED=$((FAILED + 1))
+        local actual=$?
+        echo "  FAIL  $name (exit code: $actual)"
+        if [[ "$VERBOSE" -eq 1 ]]; then
+            printf '%b' "$input" | "$exe" 2>&1 || true
+        fi
+    fi
+}
+
+# ── 1. 调试器测试 ────────────────────────────────────────
+
+echo "[1] Debugger Tests (C)"
 echo "──────────────────────────────────────────"
 
-if [[ -x "$SMOKE_BIN" ]]; then
-    run_test "memory smoke test" "$SMOKE_BIN" 0
-else
-    echo "  SKIP  memory smoke test (binary not found — build first)"
-    ((SKIPPED++))
-fi
+run_exe_test "debugger basic commands"     "riscv_debugger_test"
+run_exe_test "debugger edge/error cases"   "riscv_debugger_edges_test"
+run_exe_test "breakpoint add/del/has"      "riscv_breakpoint_test"
 
-# ── 2. 指令级测试 ─────────────────────────────────────────
+# 交互式验证
+run_pipe_test "debugger shell help+quit" \
+    "help\nquit\n" \
+    "riscv_sim"
+
+run_pipe_test "debugger shell regs+info" \
+    "regs\ninfo r\ninfo b\nquit\n" \
+    "riscv_sim"
+
+run_pipe_test "debugger shell breakpoints" \
+    "b 0x1012c\nb 0x10130\ninfo b\ndel 0\ninfo b\nquit\n" \
+    "riscv_sim"
+
+run_pipe_test "debugger shell memory" \
+    "x 0x0 32\nx 0x100=0xdead\nx 0x100 4\nquit\n" \
+    "riscv_sim"
+
+run_pipe_test "debugger shell trace+reset" \
+    "trace on\ntrace off\nreset\nquit\n" \
+    "riscv_sim"
+
+run_pipe_test "debugger shell errors" \
+    "xyzzy\nb\nx\nx xyz\ndel\ndel 999\ninfo x\nquit\n" \
+    "riscv_sim"
+
+# ── 2. CPU 测试 ────────────────────────────────────────
 
 echo ""
-echo "[2] Instruction Tests (RV32I)"
+echo "[2] CPU Tests (A)"
 echo "──────────────────────────────────────────"
 
-# 等待 A 成员提供测试 ELF 后补充实际路径
-# 以下为框架占位，ELD 就绪后解除注释：
+run_exe_test "cpu instructions"   "riscv_cpu_test"
+run_exe_test "syscall"           "riscv_syscall_test"
+run_exe_test "syscall edges"     "riscv_syscall_edges_test"
 
-# INSTR_DIR="$EXAMPLES_DIR/instructions"
-# for elf in "$INSTR_DIR"/*.elf; do
-#     name="$(basename "$elf" .elf)"
-#     run_test "instr/$name" "'$SIM_BIN' '$elf' -c | tail -1" 0
-# done
-
-echo "  SKIP  instruction tests (ELF files not yet available from member A)"
-SKIPPED=$((SKIPPED + 47))
-
-# ── 3. 程序级测试 ─────────────────────────────────────────
+# ── 3. 内存测试 ─────────────────────────────────────────
 
 echo ""
-echo "[3] Program Tests"
+echo "[3] Memory Tests (B)"
 echo "──────────────────────────────────────────"
 
-# Hello World — 等待 B 提供 hello.elf
-if [[ -f "$EXAMPLES_DIR/hello.elf" ]]; then
-    run_test "hello world" "'$SIM_BIN' '$EXAMPLES_DIR/hello.elf' -c | grep -q 'Hello'" 0
-else
-    echo "  SKIP  hello world (hello.elf not yet available from member B)"
-    ((SKIPPED++))
-fi
+run_exe_test "memory read/write"  "riscv_memory_test"
 
-# 循环测试
-if [[ -f "$EXAMPLES_DIR/loop.elf" ]]; then
-    run_test "loop" "'$SIM_BIN' '$EXAMPLES_DIR/loop.elf' -c" 0
-else
-    echo "  SKIP  loop (loop.elf not yet available)"
-    ((SKIPPED++))
-fi
-
-# 递归测试
-if [[ -f "$EXAMPLES_DIR/recursion.elf" ]]; then
-    run_test "recursion" "'$SIM_BIN' '$EXAMPLES_DIR/recursion.elf' -c" 0
-else
-    echo "  SKIP  recursion (recursion.elf not yet available)"
-    ((SKIPPED++))
-fi
-
-# 数组运算测试
-if [[ -f "$EXAMPLES_DIR/array.elf" ]]; then
-    run_test "array" "'$SIM_BIN' '$EXAMPLES_DIR/array.elf' -c" 0
-else
-    echo "  SKIP  array (array.elf not yet available)"
-    ((SKIPPED++))
-fi
-
-# ── 4. 调试器命令测试 ─────────────────────────────────────
+# ── 4. ELF 加载器测试 ────────────────────────────────────
 
 echo ""
-echo "[4] Debugger Command Tests"
+echo "[4] ELF Loader Tests (B)"
 echo "──────────────────────────────────────────"
 
-# 用 echo 管道送入命令，验证调试器不崩溃
-DEBUG_CMDS="help\nquit\n"
-run_test "debugger help+quit" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
+run_exe_test "hello program"     "riscv_hello_test"
+run_exe_test "elf edges"         "riscv_elf_loader_edges_test"
+run_exe_test "illegal exit"      "riscv_illegal_exit_test"
 
-DEBUG_CMDS="regs\nquit\n"
-run_test "debugger regs" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
-
-DEBUG_CMDS="info r\nquit\n"
-run_test "debugger info r" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
-
-DEBUG_CMDS="b 0x1000\ninfo b\ndel 0\nquit\n"
-run_test "debugger breakpoint add/list/del" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
-
-DEBUG_CMDS="trace on\ntrace off\nquit\n"
-run_test "debugger trace toggle" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
-
-DEBUG_CMDS="x 0x0 16\nx 0x100=0xdeadbeef\nx 0x100 4\nquit\n"
-run_test "debugger memory examine/write" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
-
-DEBUG_CMDS="reset\nquit\n"
-run_test "debugger reset" \
-    "echo -e '$DEBUG_CMDS' | '$SIM_BIN' > /dev/null" 0
-
-# ── 5. 异常测试 ───────────────────────────────────────────
+# ── 5. 程序级测试 ────────────────────────────────────────
 
 echo ""
-echo "[5] Error Handling Tests"
+echo "[5] Program Tests (A+B)"
 echo "──────────────────────────────────────────"
 
-run_test "debugger unknown command" \
-    "echo -e 'xyzzy\nquit\n' | '$SIM_BIN' > /dev/null" 0
+run_exe_test "loop program"       "riscv_loop_test"
+run_exe_test "recursion program"  "riscv_recursion_test"
+run_exe_test "array program"      "riscv_array_test"
 
-run_test "debugger invalid address" \
-    "echo -e 'x xyz\nquit\n' | '$SIM_BIN' > /dev/null" 0
+# ── 6. 冒烟测试 ─────────────────────────────────────────
 
-run_test "debugger break without addr" \
-    "echo -e 'b\nquit\n' | '$SIM_BIN' > /dev/null" 0
+echo ""
+echo "[6] Smoke Test"
+echo "──────────────────────────────────────────"
 
-run_test "debugger del out of range" \
-    "echo -e 'del 999\nquit\n' | '$SIM_BIN' > /dev/null" 0
+run_exe_test "smoke test" "riscv_smoke_test"
 
 # ── 汇总 ──────────────────────────────────────────────────
 
@@ -206,12 +200,12 @@ echo ""
 TOTAL=$((PASSED + FAILED))
 if [[ $TOTAL -gt 0 ]]; then
     PERCENT=$((PASSED * 100 / TOTAL))
-    echo "  Pass rate: $PERCENT% ($PASSED/$TOTAL)"
+    echo "  Pass rate: $PERCENT% ($PASSED/$TOTAL executed)"
 fi
 
 if [[ $FAILED -gt 0 ]]; then
     echo ""
-    echo "Some tests FAILED. Re-run with --verbose for details:"
+    echo "Some tests FAILED. Re-run with --verbose:"
     echo "  bash tests/run_tests.sh --verbose"
     exit 1
 else
