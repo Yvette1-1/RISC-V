@@ -12,10 +12,16 @@ namespace riscv {
 
 namespace {
 constexpr std::size_t kDefaultMemorySize = 64u * 1024u * 1024u;
+constexpr std::uint32_t kStackAlignment = 16u;
+constexpr std::uint32_t kHeapAlignment = 0x1000u;
 constexpr std::uint32_t kSysWrite = 64u;
 constexpr std::uint32_t kSysRead = 63u;
 constexpr std::uint32_t kSysExit = 93u;
 constexpr std::uint32_t kSysBrk = 214u;
+
+std::uint32_t align_up(std::uint32_t value, std::uint32_t alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
 
 std::int32_t make_imm_i(std::uint32_t inst) {
     return sign_extend(get_bits(inst, 31, 20), 12);
@@ -59,13 +65,43 @@ bool Simulator::load_program(const std::string& path) {
     brk_ = 0;
     heap_base_ = 0;
     last_error_.clear();
+    for (auto& reg : regs_) {
+        reg = 0;
+    }
+
     const auto result = load_elf(path, memory_);
     if (!result.ok) {
         state_ = SimulatorState::Error;
         last_error_ = result.error;
         return false;
     }
+
+    if (config_.stack_size == 0 || config_.stack_top > memory_.size() || config_.stack_size > config_.stack_top) {
+        state_ = SimulatorState::Error;
+        last_error_ = "invalid stack configuration";
+        return false;
+    }
+    const auto stack_base = config_.stack_top - config_.stack_size;
+    if (!memory_.map_region({stack_base, config_.stack_size, MEM_READ | MEM_WRITE, "stack"})) {
+        state_ = SimulatorState::Error;
+        last_error_ = "failed to map initial stack";
+        return false;
+    }
+
+    std::uint32_t max_segment_end = 0;
+    for (const auto& segment : result.segments) {
+        max_segment_end = std::max(max_segment_end, segment.vaddr + segment.mem_size);
+    }
+    heap_base_ = align_up(max_segment_end, kHeapAlignment);
+    brk_ = heap_base_;
+    if (heap_base_ >= stack_base) {
+        state_ = SimulatorState::Error;
+        last_error_ = "ELF image leaves no room for heap and stack";
+        return false;
+    }
+
     pc_ = result.entry_point;
+    regs_[2] = config_.stack_top & ~(kStackAlignment - 1u);
     state_ = SimulatorState::Loaded;
     return true;
 }
@@ -138,26 +174,28 @@ Simulator::ExecuteResult Simulator::handle_syscall() {
         return ExecuteResult::Exited;
     case kSysBrk: {
         const auto requested = regs_[10];
-        const auto lower = config_.stack_top - config_.stack_size;
-        const auto upper = config_.stack_top - 0x1000u;
+        const auto stack_base = config_.stack_top - config_.stack_size;
+        const auto heap_limit = stack_base > kHeapAlignment ? stack_base - kHeapAlignment : stack_base;
         if (heap_base_ == 0) {
-            heap_base_ = lower;
-            brk_ = lower;
-        }
-        if (heap_base_ < lower) {
-            heap_base_ = lower;
+            heap_base_ = align_up(brk_, kHeapAlignment);
+            brk_ = heap_base_;
         }
         if (requested == 0) {
             regs_[10] = brk_;
             return ExecuteResult::Advanced;
         }
-        if (requested < heap_base_ || requested > upper || requested < brk_) {
+        if (requested < heap_base_ || requested > heap_limit || requested < brk_) {
             regs_[10] = brk_;
             return ExecuteResult::Advanced;
         }
         if (requested > brk_) {
-            const auto region = MemoryRegion{brk_, requested - brk_, MEM_READ | MEM_WRITE, "heap"};
-            if (!memory_.map_region(region)) {
+            const auto mapped_base = brk_;
+            const auto mapped_size = requested - brk_;
+            if (!memory_.map_region({mapped_base, mapped_size, MEM_READ | MEM_WRITE, "heap"})) {
+                regs_[10] = brk_;
+                return ExecuteResult::Advanced;
+            }
+            if (!memory_.fill(mapped_base, 0, mapped_size)) {
                 regs_[10] = brk_;
                 return ExecuteResult::Advanced;
             }
