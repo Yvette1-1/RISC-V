@@ -140,6 +140,54 @@ DebugCommandResult Debugger::handle_command(const std::string& line) {
         return {true, false, {}};
     }
 
+    // ── demo: 自动演示 Hello 程序完整调试流程 ──
+    if (cmd == "demo") {
+        const auto& path = simulator_.program_path();
+        if (path.empty()) {
+            return {true, false, "demo: no program loaded — load ELF first via menu option 1"};
+        }
+
+        auto entry = simulator_.pc();
+        std::cout << "\n========== Demo: " << path << " ==========\n\n";
+
+        // 1. 断点
+        std::cout << "[1/6] Setting breakpoint at entry " << hex_str(entry) << '\n';
+        add_breakpoint(entry);
+
+        // 2. 运行到断点
+        std::cout << "[2/6] Running to breakpoint...\n";
+        simulator_.run();
+        print_status();
+
+        // 3. 寄存器
+        std::cout << "\n[3/6] Register dump:\n";
+        print_registers();
+
+        // 4. 单步 3 条
+        std::cout << "\n[4/6] Stepping 3 instructions:\n";
+        for (int i = 0; i < 3; ++i) {
+            if (!simulator_.step()) {
+                std::cout << "  step stopped: " << simulator_.last_error() << '\n';
+                break;
+            }
+            print_status();
+        }
+
+        // 5. 内存查看
+        std::cout << "\n[5/6] Memory around PC:\n";
+        print_memory(simulator_.pc(), 32);
+
+        // 6. 断点清理 + 继续运行
+        std::cout << "\n[6/6] Breakpoints:\n";
+        list_breakpoints();
+        remove_breakpoint(entry);
+        std::cout << "Continuing execution...\n";
+        simulator_.run();
+        print_status();
+        std::cout << "\n========== Demo complete ==========\n";
+        return {true, false, {}};
+    }
+
     // ── x addr [count]  /  x addr=value ──
     if (cmd == "x") {
         std::string tok;
@@ -244,6 +292,7 @@ void Debugger::print_help() const {
   info b                 List all breakpoints
   step [N] / s [N]       Single-step N instructions (default 1)
   continue / c / run     Continue execution until breakpoint or halt
+  demo                   Auto-demo: breakpoint - step - regs - memory
   pipeline / pipe / cpi  Show pipeline state and CPI statistics
   x <addr> [count]       Examine memory (hex dump), default 16 bytes
   x <addr>=<value>       Write 32-bit value to memory
@@ -253,6 +302,7 @@ void Debugger::print_help() const {
   reset                  Reset simulator state
 
 All addresses in hex (0x prefix optional). Examples:
+  demo                    run full Hello demo (requires loaded ELF)
   b 0x1012c              set breakpoint
   step 3                  step 3 instructions
   x 0x10000 32           dump 32 bytes from 0x10000
