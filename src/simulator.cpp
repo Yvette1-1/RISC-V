@@ -64,6 +64,15 @@ bool Simulator::load_program(const std::string& path) {
     exit_code_ = 0;
     brk_ = 0;
     heap_base_ = 0;
+    tohost_ = 0;
+    fromhost_ = 0;
+    csr_mstatus_ = 0;
+    csr_mtvec_ = 0;
+    csr_mepc_ = 0;
+    csr_mcause_ = 0;
+    csr_mtval_ = 0;
+    pipeline_ = {};
+    pipeline_stats_ = {};
     last_error_.clear();
     for (auto& reg : regs_) {
         reg = 0;
@@ -102,6 +111,8 @@ bool Simulator::load_program(const std::string& path) {
 
     pc_ = result.entry_point;
     regs_[2] = config_.stack_top & ~(kStackAlignment - 1u);
+    tohost_ = result.tohost;
+    fromhost_ = result.fromhost;
     state_ = SimulatorState::Loaded;
     return true;
 }
@@ -114,6 +125,15 @@ bool Simulator::reset() {
     exit_code_ = 0;
     brk_ = 0;
     heap_base_ = 0;
+    tohost_ = 0;
+    fromhost_ = 0;
+    csr_mstatus_ = 0;
+    csr_mtvec_ = 0;
+    csr_mepc_ = 0;
+    csr_mcause_ = 0;
+    csr_mtval_ = 0;
+    pipeline_ = {};
+    pipeline_stats_ = {};
     for (auto& reg : regs_) {
         reg = 0;
     }
@@ -228,6 +248,7 @@ Simulator::ExecuteResult Simulator::execute_one() {
     }
 
     const auto decoded = decode(inst);
+    const auto current_pc = pc_;
     std::uint32_t next_pc = pc_ + 4;
 
     auto read_reg = [this](std::size_t idx) -> std::uint32_t {
@@ -364,6 +385,17 @@ Simulator::ExecuteResult Simulator::execute_one() {
             state_ = SimulatorState::Trapped;
             return ExecuteResult::Error;
         }
+        if (tohost_ != 0 && addr == tohost_) {
+            exit_code_ = value;
+            state_ = SimulatorState::Exited;
+            return ExecuteResult::Exited;
+        }
+        if (fromhost_ != 0 && addr == fromhost_) {
+            if (value != 0) {
+                const std::uint32_t zero = 0;
+                (void)memory_.store32(fromhost_, zero);
+            }
+        }
         break;
     }
     case 0x6f: {
@@ -414,9 +446,88 @@ Simulator::ExecuteResult Simulator::execute_one() {
             state_ = (syscall_result == ExecuteResult::Exited) ? SimulatorState::Exited : SimulatorState::Loaded;
             return syscall_result;
         }
-        last_error_ = "unsupported system instruction";
-        state_ = SimulatorState::Trapped;
-        return ExecuteResult::Error;
+        if (inst == 0x30200073u) { // mret
+            pc_ = csr_mepc_;
+            regs_[0] = 0;
+            state_ = SimulatorState::Loaded;
+            return ExecuteResult::Advanced;
+        }
+
+        const auto csr_addr = get_bits(inst, 31, 20);
+        auto read_csr = [this](std::uint32_t csr) -> std::uint32_t {
+            switch (csr) {
+            case 0x300: return csr_mstatus_;
+            case 0x305: return csr_mtvec_;
+            case 0x341: return csr_mepc_;
+            case 0x342: return csr_mcause_;
+            case 0x343: return csr_mtval_;
+            default: return 0u;
+            }
+        };
+        auto write_csr = [this](std::uint32_t csr, std::uint32_t value) {
+            switch (csr) {
+            case 0x300: csr_mstatus_ = value; break;
+            case 0x305: csr_mtvec_ = value; break;
+            case 0x341: csr_mepc_ = value; break;
+            case 0x342: csr_mcause_ = value; break;
+            case 0x343: csr_mtval_ = value; break;
+            default: break;
+            }
+        };
+
+        switch (decoded.funct3) {
+        case 0x1: { // csrrw
+            const auto old = read_csr(csr_addr);
+            write_csr(csr_addr, read_reg(decoded.rs1));
+            write_reg(decoded.rd, old);
+            break;
+        }
+        case 0x2: { // csrrs
+            const auto old = read_csr(csr_addr);
+            const auto rs1 = read_reg(decoded.rs1);
+            if (decoded.rs1 != 0) write_csr(csr_addr, old | rs1);
+            write_reg(decoded.rd, old);
+            break;
+        }
+        case 0x3: { // csrrc
+            const auto old = read_csr(csr_addr);
+            const auto rs1 = read_reg(decoded.rs1);
+            if (decoded.rs1 != 0) write_csr(csr_addr, old & ~rs1);
+            write_reg(decoded.rd, old);
+            break;
+        }
+        case 0x5: { // csrrwi
+            const auto old = read_csr(csr_addr);
+            write_csr(csr_addr, decoded.rs1);
+            write_reg(decoded.rd, old);
+            break;
+        }
+        case 0x6: { // csrrsi
+            const auto old = read_csr(csr_addr);
+            if (decoded.rs1 != 0) write_csr(csr_addr, old | decoded.rs1);
+            write_reg(decoded.rd, old);
+            break;
+        }
+        case 0x7: { // csrrci
+            const auto old = read_csr(csr_addr);
+            if (decoded.rs1 != 0) write_csr(csr_addr, old & ~decoded.rs1);
+            write_reg(decoded.rd, old);
+            break;
+        }
+        default:
+            last_error_ = "unsupported system instruction";
+            state_ = SimulatorState::Trapped;
+            csr_mepc_ = pc_;
+            csr_mcause_ = 2u;
+            csr_mtval_ = inst;
+            if (csr_mtvec_ != 0) {
+                pc_ = csr_mtvec_;
+                state_ = SimulatorState::Loaded;
+                return ExecuteResult::Advanced;
+            }
+            return ExecuteResult::Error;
+        }
+        break;
     }
     default:
         last_error_ = "unsupported opcode";
@@ -424,8 +535,28 @@ Simulator::ExecuteResult Simulator::execute_one() {
         return ExecuteResult::Error;
     }
 
+    const bool control_change = next_pc != current_pc + 4;
     pc_ = next_pc;
     regs_[0] = 0;
+    pipeline_.cycle++;
+    pipeline_.wb_pc = pipeline_.mem_pc;
+    pipeline_.wb_valid = pipeline_.mem_valid;
+    pipeline_.mem_pc = pipeline_.ex_pc;
+    pipeline_.mem_valid = pipeline_.ex_valid;
+    pipeline_.ex_pc = pipeline_.id_pc;
+    pipeline_.ex_valid = pipeline_.id_valid;
+    pipeline_.id_pc = pipeline_.if_pc;
+    pipeline_.id_valid = pipeline_.if_valid;
+    pipeline_.if_pc = pc_;
+    pipeline_.if_valid = state_ != SimulatorState::Trapped && state_ != SimulatorState::Exited;
+    pipeline_stats_.cycles += 1;
+    pipeline_stats_.instructions += 1;
+    if (control_change) {
+        pipeline_stats_.flushes += 1;
+        pipeline_.if_valid = false;
+        pipeline_.id_valid = false;
+    }
+    pipeline_stats_.cpi = static_cast<double>(pipeline_stats_.cycles) / static_cast<double>(pipeline_stats_.instructions);
     if (state_ != SimulatorState::Trapped) {
         state_ = SimulatorState::Loaded;
     }
@@ -497,6 +628,14 @@ bool Simulator::set_reg(std::size_t index, std::uint32_t value) {
     }
     regs_[index] = value;
     return true;
+}
+
+PipelineStats Simulator::pipeline_stats() const noexcept {
+    return pipeline_stats_;
+}
+
+const PipelineSnapshot& Simulator::pipeline_snapshot() const noexcept {
+    return pipeline_;
 }
 
 Memory& Simulator::memory() noexcept {

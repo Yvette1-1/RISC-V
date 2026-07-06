@@ -10,6 +10,28 @@
 
 namespace riscv {
 
+struct PipelineSnapshot {
+    std::uint64_t cycle = 0;
+    std::uint32_t if_pc = 0;
+    std::uint32_t id_pc = 0;
+    std::uint32_t ex_pc = 0;
+    std::uint32_t mem_pc = 0;
+    std::uint32_t wb_pc = 0;
+    bool if_valid = false;
+    bool id_valid = false;
+    bool ex_valid = false;
+    bool mem_valid = false;
+    bool wb_valid = false;
+};
+
+struct PipelineStats {
+    std::uint64_t cycles = 0;
+    std::uint64_t instructions = 0;
+    std::uint64_t stalls = 0;
+    std::uint64_t flushes = 0;
+    double cpi = 0.0;
+};
+
 struct SimulatorStatus {
     SimulatorState state = SimulatorState::Idle;
     std::uint32_t pc = 0;
@@ -34,6 +56,8 @@ public:
     const std::uint32_t* regs() const noexcept;
     std::uint32_t reg(std::size_t index) const;
     bool set_reg(std::size_t index, std::uint32_t value);
+    PipelineStats pipeline_stats() const noexcept;
+    const PipelineSnapshot& pipeline_snapshot() const noexcept;
 
     Memory& memory() noexcept;
     const Memory& memory() const noexcept;
@@ -68,6 +92,15 @@ private:
     std::uint32_t exit_code_ = 0;
     std::uint32_t brk_ = 0;
     std::uint32_t heap_base_ = 0;
+    std::uint32_t tohost_ = 0;
+    std::uint32_t fromhost_ = 0;
+    std::uint32_t csr_mstatus_ = 0;
+    std::uint32_t csr_mtvec_ = 0;
+    std::uint32_t csr_mepc_ = 0;
+    std::uint32_t csr_mcause_ = 0;
+    std::uint32_t csr_mtval_ = 0;
+    PipelineSnapshot pipeline_{};
+    PipelineStats pipeline_stats_{};
     std::vector<std::uint32_t> breakpoints_;
     std::string last_error_;
 };

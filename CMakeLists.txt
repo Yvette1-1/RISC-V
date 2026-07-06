@@ -10,6 +10,7 @@ option(BUILD_TESTS "Build tests" ON)
 add_library(riscv_core
     src/debugger.cpp
     src/elf_loader.cpp
+    src/gdb_rsp.cpp
     src/memory.cpp
     src/simulator.cpp
 )
@@ -83,4 +84,8 @@ if(BUILD_TESTS)
     add_executable(riscv_illegal_exit_test tests/test_illegal_exit.cpp)
     target_link_libraries(riscv_illegal_exit_test PRIVATE riscv_core)
     add_test(NAME riscv_illegal_exit_test COMMAND riscv_illegal_exit_test)
+
+    add_executable(riscv_gdb_rsp_test tests/test_gdb_rsp.cpp)
+    target_link_libraries(riscv_gdb_rsp_test PRIVATE riscv_core)
+    add_test(NAME riscv_gdb_rsp_test COMMAND riscv_gdb_rsp_test)
 endif()
