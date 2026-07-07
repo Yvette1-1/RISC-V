@@ -42,9 +42,37 @@ DebugCommandResult Debugger::handle_command(const std::string& line) {
         print_registers();
         return {true, false, {}};
     }
-    if (cmd == "step" || cmd == "s") {
-        if (!simulator_.step()) {
-            return {true, false, simulator_.last_error().empty() ? "Step failed" : simulator_.last_error()};
+    if (cmd == "info") {
+        std::string sub;
+        if (!(iss >> sub)) {
+            print_registers();
+            return {true, false, {}};
+        }
+        if (sub == "r") {
+            print_registers();
+            return {true, false, {}};
+        }
+        if (sub == "b") {
+            list_breakpoints();
+            return {true, false, {}};
+        }
+        return {true, false, "info: unknown subcommand"};
+    }
+    if (cmd == "step" || cmd == "si" || cmd == "s") {
+        std::size_t count = 1;
+        std::string arg;
+        if (iss >> arg) {
+            char* end = nullptr;
+            auto parsed = std::strtoul(arg.c_str(), &end, 10);
+            if (end == arg.c_str() || *end != '\0' || parsed == 0) {
+                return {true, false, "si: invalid count"};
+            }
+            count = parsed;
+        }
+        for (std::size_t i = 0; i < count; ++i) {
+            if (!simulator_.step()) {
+                return {true, false, simulator_.last_error().empty() ? "Step failed" : simulator_.last_error()};
+            }
         }
         print_status();
         return {true, false, {}};
@@ -64,7 +92,7 @@ DebugCommandResult Debugger::handle_command(const std::string& line) {
         simulator_.set_trace_enabled(mode == "on");
         return {true, false, mode == "on" ? "Instruction trace: ON" : "Instruction trace: OFF"};
     }
-    if (cmd == "b") {
+    if (cmd == "b" || cmd == "break") {
         std::string tok;
         if (!(iss >> tok)) return {true, false, "b: missing address"};
         std::uint32_t addr = 0;
@@ -72,7 +100,7 @@ DebugCommandResult Debugger::handle_command(const std::string& line) {
         add_breakpoint(addr);
         return {true, false, "Breakpoint set"};
     }
-    if (cmd == "del") {
+    if (cmd == "del" || cmd == "d" || cmd == "delete") {
         std::size_t idx = 0;
         if (!(iss >> idx)) return {true, false, "del: missing index"};
         const auto& bps = simulator_.breakpoints();
@@ -96,7 +124,7 @@ void Debugger::refresh_breakpoints() {
 }
 
 void Debugger::print_help() const {
-    std::cout << "Commands: help, quit, regs, step, continue, pipeline, trace on/off, b <addr>, del <n>, reset\n";
+    std::cout << "Commands: help, quit, regs, info r, info b, step, continue, pipeline, trace on/off, b <addr>, del <n>, reset\n";
 }
 
 void Debugger::print_registers() const {
@@ -149,7 +177,17 @@ void Debugger::print_pipeline() const {
 }
 
 void Debugger::print_memory(std::uint32_t, std::size_t) const {}
-void Debugger::list_breakpoints() const {}
+void Debugger::list_breakpoints() const {
+    const auto& bps = simulator_.breakpoints();
+    if (bps.empty()) {
+        std::cout << "No breakpoints.\n";
+        return;
+    }
+    std::cout << "Breakpoints (" << bps.size() << "):\n";
+    for (std::size_t i = 0; i < bps.size(); ++i) {
+        std::cout << "  [" << i << "] 0x" << std::hex << bps[i] << std::dec << '\n';
+    }
+}
 void Debugger::add_breakpoint(std::uint32_t addr) { simulator_.add_breakpoint(addr); refresh_breakpoints(); }
 void Debugger::remove_breakpoint(std::uint32_t addr) { simulator_.remove_breakpoint(addr); refresh_breakpoints(); }
 

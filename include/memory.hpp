@@ -31,6 +31,8 @@ public:
     bool unmap_region(std::uint32_t base);
     void clear() noexcept;
     bool is_mapped(std::uint32_t addr) const;
+    bool contains(std::uint32_t addr, std::size_t size) const;
+    bool fill(std::uint32_t addr, std::uint8_t value, std::size_t size);
     const MemoryRegion* region_at(std::uint32_t addr) const;
     const std::vector<MemoryRegion>& regions() const noexcept;
 

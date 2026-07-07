@@ -46,6 +46,24 @@ bool Memory::is_mapped(std::uint32_t addr) const {
     return region_at(addr) != nullptr;
 }
 
+bool Memory::contains(std::uint32_t addr, std::size_t size) const {
+    if (size == 0) {
+        return false;
+    }
+    const auto end = static_cast<std::uint64_t>(addr) + static_cast<std::uint64_t>(size);
+    return end <= bytes_.size();
+}
+
+bool Memory::fill(std::uint32_t addr, std::uint8_t value, std::size_t size) {
+    if (!check_range(addr, size, MEM_WRITE)) {
+        return false;
+    }
+    std::fill(bytes_.begin() + static_cast<std::ptrdiff_t>(addr),
+              bytes_.begin() + static_cast<std::ptrdiff_t>(addr + size),
+              value);
+    return true;
+}
+
 const MemoryRegion* Memory::region_at(std::uint32_t addr) const {
     for (const auto& region : regions_) {
         if (addr >= region.base && addr < region.base + region.size) {
