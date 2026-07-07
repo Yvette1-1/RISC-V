@@ -90,6 +90,11 @@ bool Simulator::load_program(const std::string& path) {
         last_error_ = "invalid stack configuration";
         return false;
     }
+    if (!map_mmio()) {
+        state_ = SimulatorState::Error;
+        last_error_ = "failed to map MMIO region";
+        return false;
+    }
     const auto stack_base = config_.stack_top - config_.stack_size;
     if (!memory_.map_region({stack_base, config_.stack_size, MEM_READ | MEM_WRITE, "stack"})) {
         state_ = SimulatorState::Error;
@@ -114,6 +119,38 @@ bool Simulator::load_program(const std::string& path) {
     tohost_ = result.tohost;
     fromhost_ = result.fromhost;
     state_ = SimulatorState::Loaded;
+    return true;
+}
+
+bool Simulator::map_mmio() {
+    if (config_.mmio_size == 0) {
+        return true;
+    }
+    if (config_.uart_tx_addr < config_.mmio_base ||
+        config_.uart_tx_addr >= config_.mmio_base + config_.mmio_size) {
+        return false;
+    }
+    return memory_.map_region({config_.mmio_base,
+                               config_.mmio_size,
+                               MEM_READ | MEM_WRITE,
+                               "mmio",
+                               MemoryRegionKind::Mmio});
+}
+
+bool Simulator::handle_mmio_store(std::uint32_t addr, std::uint32_t value, std::size_t size) {
+    const auto* region = memory_.region_at(addr);
+    if (region == nullptr || region->kind != MemoryRegionKind::Mmio) {
+        return false;
+    }
+    if (addr + size > region->base + region->size) {
+        return false;
+    }
+    if (addr == config_.uart_tx_addr && size == 1) {
+        const auto ch = static_cast<char>(value & 0xffu);
+        std::cout.put(ch);
+        std::cout.flush();
+        return true;
+    }
     return true;
 }
 
@@ -377,9 +414,21 @@ Simulator::ExecuteResult Simulator::execute_one() {
         const auto addr = read_reg(decoded.rs1) + make_imm_s(inst);
         const auto value = read_reg(decoded.rs2);
         switch (decoded.funct3) {
-        case 0x0: if (!memory_.store8(addr, static_cast<std::uint8_t>(value))) { last_error_ = "sb failed"; state_ = SimulatorState::Trapped; return ExecuteResult::Error; } break;
-        case 0x1: if (!memory_.store16(addr, static_cast<std::uint16_t>(value))) { last_error_ = "sh failed"; state_ = SimulatorState::Trapped; return ExecuteResult::Error; } break;
-        case 0x2: if (!memory_.store32(addr, value)) { last_error_ = "sw failed"; state_ = SimulatorState::Trapped; return ExecuteResult::Error; } break;
+        case 0x0:
+            if (!handle_mmio_store(addr, value, 1) && !memory_.store8(addr, static_cast<std::uint8_t>(value))) {
+                last_error_ = "sb failed"; state_ = SimulatorState::Trapped; return ExecuteResult::Error;
+            }
+            break;
+        case 0x1:
+            if (!handle_mmio_store(addr, value, 2) && !memory_.store16(addr, static_cast<std::uint16_t>(value))) {
+                last_error_ = "sh failed"; state_ = SimulatorState::Trapped; return ExecuteResult::Error;
+            }
+            break;
+        case 0x2:
+            if (!handle_mmio_store(addr, value, 4) && !memory_.store32(addr, value)) {
+                last_error_ = "sw failed"; state_ = SimulatorState::Trapped; return ExecuteResult::Error;
+            }
+            break;
         default:
             last_error_ = "unsupported store";
             state_ = SimulatorState::Trapped;

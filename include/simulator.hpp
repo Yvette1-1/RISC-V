@@ -83,6 +83,8 @@ private:
 
     ExecuteResult execute_one();
     ExecuteResult handle_syscall();
+    bool map_mmio();
+    bool handle_mmio_store(std::uint32_t addr, std::uint32_t value, std::size_t size);
 
     SimulatorConfig config_;
     Memory memory_;
