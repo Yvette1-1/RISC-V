@@ -118,14 +118,31 @@ int main() {
         riscv::Memory mem(0x4000u);
         auto res = riscv::load_elf("bss.elf", mem);
         assert(res.ok);
+        assert(res.segments.size() == 1);
+        assert(res.segments[0].vaddr == 0x1000u);
         std::uint32_t value = 0;
         assert(mem.load32(0x1000u, value) && value == 0x01020304u);
         std::uint32_t zero = 0xffffffffu;
         assert(mem.load32(0x1004u, zero) && zero == 0u);
     }
 
+    {
+        std::ofstream out("overlap.elf", std::ios::binary | std::ios::trunc);
+        write_header(out, 2);
+        write_ph(out, 1, 0x200, 0x1000u, 4u, 0x100u, 0x6u);
+        write_ph(out, 1, 0x204, 0x1080u, 4u, 0x100u, 0x6u);
+        out.seekp(0x200);
+        write_u32(out, 0x11111111u);
+        write_u32(out, 0x22222222u);
+        out.close();
+        riscv::Memory mem(0x4000u);
+        auto res = riscv::load_elf("overlap.elf", mem);
+        assert(!res.ok);
+    }
+
     std::remove("bad_magic.elf");
     std::remove("bad_segment.elf");
     std::remove("bss.elf");
+    std::remove("overlap.elf");
     return 0;
 }
