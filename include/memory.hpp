@@ -26,6 +26,7 @@ public:
     explicit Memory(std::size_t size);
 
     std::size_t size() const noexcept;
+    bool contains(std::uint32_t addr, std::size_t length = 1) const noexcept;
 
     bool map_region(const MemoryRegion& region);
     bool unmap_region(std::uint32_t base);
@@ -45,6 +46,7 @@ public:
     bool store16(std::uint32_t addr, std::uint16_t value);
     bool store32(std::uint32_t addr, std::uint32_t value);
     bool store_bytes(std::uint32_t addr, const void* src, std::size_t size);
+    bool fill(std::uint32_t addr, std::uint8_t value, std::size_t size);
 
     std::uint8_t* data() noexcept;
     const std::uint8_t* data() const noexcept;

@@ -11,14 +11,19 @@ std::size_t Memory::size() const noexcept {
     return bytes_.size();
 }
 
+bool Memory::contains(std::uint32_t addr, std::size_t length) const noexcept {
+    if (length == 0) {
+        return true;
+    }
+    const auto start = static_cast<std::size_t>(addr);
+    return start < bytes_.size() && length <= bytes_.size() - start;
+}
+
 bool Memory::map_region(const MemoryRegion& region) {
-    if (region.size == 0) {
+    if (region.size == 0 || !contains(region.base, region.size)) {
         return false;
     }
     const auto end = static_cast<std::uint64_t>(region.base) + static_cast<std::uint64_t>(region.size);
-    if (end > bytes_.size()) {
-        return false;
-    }
     for (const auto& existing : regions_) {
         const auto existing_end = static_cast<std::uint64_t>(existing.base) + static_cast<std::uint64_t>(existing.size);
         if (!(end <= existing.base || existing_end <= region.base)) {
@@ -39,6 +44,7 @@ bool Memory::unmap_region(std::uint32_t base) {
 }
 
 void Memory::clear() noexcept {
+    std::fill(bytes_.begin(), bytes_.end(), 0);
     regions_.clear();
 }
 
@@ -78,12 +84,11 @@ const std::vector<MemoryRegion>& Memory::regions() const noexcept {
 }
 
 bool Memory::check_range(std::uint32_t addr, std::size_t size, std::uint32_t required_perms) const {
-    if (size == 0) {
+    if (!contains(addr, size)) {
         return false;
     }
-    const auto end = static_cast<std::uint64_t>(addr) + static_cast<std::uint64_t>(size);
-    if (end > bytes_.size()) {
-        return false;
+    if (size == 0) {
+        return true;
     }
     if (regions_.empty()) {
         return true;
@@ -95,15 +100,13 @@ bool Memory::check_range(std::uint32_t addr, std::size_t size, std::uint32_t req
     if ((region->permissions & required_perms) != required_perms) {
         return false;
     }
+    const auto end = static_cast<std::uint64_t>(addr) + static_cast<std::uint64_t>(size);
     const auto region_end = static_cast<std::uint64_t>(region->base) + static_cast<std::uint64_t>(region->size);
-    if (end > region_end) {
-        return false;
-    }
-    return true;
+    return end <= region_end;
 }
 
 bool Memory::load8(std::uint32_t addr, std::uint8_t& value) const {
-    if (!check_range(addr, 1, MEM_READ)) {
+    if (!check_range(addr, sizeof(value), MEM_READ)) {
         return false;
     }
     value = bytes_[addr];
@@ -111,7 +114,7 @@ bool Memory::load8(std::uint32_t addr, std::uint8_t& value) const {
 }
 
 bool Memory::load16(std::uint32_t addr, std::uint16_t& value) const {
-    if (!check_range(addr, 2, MEM_READ)) {
+    if (!check_range(addr, sizeof(value), MEM_READ)) {
         return false;
     }
     value = static_cast<std::uint16_t>(bytes_[addr]) |
@@ -120,7 +123,7 @@ bool Memory::load16(std::uint32_t addr, std::uint16_t& value) const {
 }
 
 bool Memory::load32(std::uint32_t addr, std::uint32_t& value) const {
-    if (!check_range(addr, 4, MEM_READ)) {
+    if (!check_range(addr, sizeof(value), MEM_READ)) {
         return false;
     }
     value = static_cast<std::uint32_t>(bytes_[addr]) |
@@ -134,12 +137,15 @@ bool Memory::load_bytes(std::uint32_t addr, void* dst, std::size_t size) const {
     if (!check_range(addr, size, MEM_READ)) {
         return false;
     }
+    if (size == 0) {
+        return true;
+    }
     std::memcpy(dst, bytes_.data() + addr, size);
     return true;
 }
 
 bool Memory::store8(std::uint32_t addr, std::uint8_t value) {
-    if (!check_range(addr, 1, MEM_WRITE)) {
+    if (!check_range(addr, sizeof(value), MEM_WRITE)) {
         return false;
     }
     bytes_[addr] = value;
@@ -147,7 +153,7 @@ bool Memory::store8(std::uint32_t addr, std::uint8_t value) {
 }
 
 bool Memory::store16(std::uint32_t addr, std::uint16_t value) {
-    if (!check_range(addr, 2, MEM_WRITE)) {
+    if (!check_range(addr, sizeof(value), MEM_WRITE)) {
         return false;
     }
     bytes_[addr] = static_cast<std::uint8_t>(value & 0xffu);
@@ -156,7 +162,7 @@ bool Memory::store16(std::uint32_t addr, std::uint16_t value) {
 }
 
 bool Memory::store32(std::uint32_t addr, std::uint32_t value) {
-    if (!check_range(addr, 4, MEM_WRITE)) {
+    if (!check_range(addr, sizeof(value), MEM_WRITE)) {
         return false;
     }
     bytes_[addr] = static_cast<std::uint8_t>(value & 0xffu);
@@ -170,7 +176,18 @@ bool Memory::store_bytes(std::uint32_t addr, const void* src, std::size_t size) 
     if (!check_range(addr, size, MEM_WRITE)) {
         return false;
     }
+    if (size == 0) {
+        return true;
+    }
     std::memcpy(bytes_.data() + addr, src, size);
+    return true;
+}
+
+bool Memory::fill(std::uint32_t addr, std::uint8_t value, std::size_t size) {
+    if (!check_range(addr, size, MEM_WRITE)) {
+        return false;
+    }
+    std::fill(bytes_.begin() + addr, bytes_.begin() + addr + static_cast<std::ptrdiff_t>(size), value);
     return true;
 }
 
