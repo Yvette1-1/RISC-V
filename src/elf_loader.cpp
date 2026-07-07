@@ -1,6 +1,7 @@
 #include "elf_loader.hpp"
 #include "memory.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -21,7 +22,6 @@ constexpr std::uint16_t kElfMachineRiscv = 243;
 constexpr std::uint32_t kProgramHeaderLoad = 1;
 constexpr std::size_t kElf32HeaderSize = 52;
 constexpr std::size_t kElf32ProgramHeaderSize = 32;
-constexpr std::uint32_t kDefaultLoadAddress = 0x1000;
 
 struct Elf32Header {
     std::array<std::uint8_t, 16> ident{};
@@ -108,14 +108,18 @@ Elf32ProgramHeader parse_program_header(const std::vector<std::uint8_t>& bytes, 
 }
 
 std::uint32_t elf_flags_to_memory_permissions(std::uint32_t flags) {
+    if ((flags & (MEM_READ | MEM_WRITE | MEM_EXEC)) != 0u) {
+        return flags & (MEM_READ | MEM_WRITE | MEM_EXEC);
+    }
+
     std::uint32_t permissions = MEM_NONE;
-    if ((flags & 0x4u) != 0 || (flags & MEM_READ) != 0) {
+    if ((flags & 0x4u) != 0u) {
         permissions |= MEM_READ;
     }
-    if ((flags & 0x2u) != 0 || (flags & MEM_WRITE) != 0) {
+    if ((flags & 0x2u) != 0u) {
         permissions |= MEM_WRITE;
     }
-    if ((flags & 0x1u) != 0 || (flags & MEM_EXEC) != 0) {
+    if ((flags & 0x1u) != 0u) {
         permissions |= MEM_EXEC;
     }
     return permissions;
@@ -205,7 +209,8 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     result.entry_point = elf_header.entry;
 
     bool loaded_segment = false;
-    std::vector<MemoryRegion> mapped_segments;
+    std::vector<MemoryRegion> segments_to_map;
+
     for (std::uint16_t i = 0; i < elf_header.program_header_count; ++i) {
         const auto offset = static_cast<std::size_t>(elf_header.program_header_offset) +
                             static_cast<std::size_t>(i) * elf_header.program_header_entry_size;
@@ -226,27 +231,24 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
             return fail("ELF load segment is outside simulator memory");
         }
 
-        const auto segment_end = static_cast<std::uint64_t>(program_header.virtual_addr) + program_header.memory_size;
-        for (const auto& segment : mapped_segments) {
-            const auto existing_end = static_cast<std::uint64_t>(segment.base) + segment.size;
-            if (!(segment_end <= segment.base || existing_end <= program_header.virtual_addr)) {
-                return fail("ELF load segments overlap");
-            }
-        }
+        const auto permissions = elf_flags_to_memory_permissions(program_header.flags);
+        segments_to_map.push_back({program_header.virtual_addr,
+                                   program_header.memory_size,
+                                   permissions,
+                                   "elf_segment"});
 
         if (!memory.store_bytes(program_header.virtual_addr,
                                 bytes.data() + program_header.offset,
                                 program_header.file_size)) {
             return fail("failed to copy ELF load segment into memory");
         }
+
         const auto zero_fill_size = program_header.memory_size - program_header.file_size;
         if (zero_fill_size != 0 &&
             !memory.fill(program_header.virtual_addr + program_header.file_size, 0, zero_fill_size)) {
             return fail("failed to zero-fill ELF bss segment");
         }
 
-        const auto permissions = elf_flags_to_memory_permissions(program_header.flags);
-        mapped_segments.push_back({program_header.virtual_addr, program_header.memory_size, permissions, "elf_segment"});
         result.segments.push_back({program_header.virtual_addr,
                                    program_header.memory_size,
                                    program_header.file_size,
@@ -255,16 +257,15 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         loaded_segment = true;
     }
 
-    for (const auto& segment : mapped_segments) {
+    if (!loaded_segment) {
+        return fail("ELF has no loadable segments");
+    }
+    for (const auto& segment : segments_to_map) {
         if (!memory.map_region(segment)) {
             return fail("failed to map ELF load segment");
         }
     }
-
-    if (!loaded_segment) {
-        return fail("ELF has no loadable segments");
-    }
-    if (!memory.contains(elf_header.entry)) {
+    if (!memory.contains(elf_header.entry, 4)) {
         return fail("ELF entry point is outside simulator memory");
     }
 

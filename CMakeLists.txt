@@ -11,7 +11,9 @@ add_library(riscv_core
     src/debugger.cpp
     src/elf_loader.cpp
     src/gdb_rsp.cpp
+    src/gdb_server.cpp
     src/memory.cpp
+    src/fpu.cpp
     src/simulator.cpp
 )
 

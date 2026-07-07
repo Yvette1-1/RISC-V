@@ -169,7 +169,9 @@ bool Memory::fill(std::uint32_t addr, std::uint8_t value, std::size_t size) {
     if (!check_range(addr, size, MEM_WRITE)) {
         return false;
     }
-    std::fill(bytes_.begin() + addr, bytes_.begin() + addr + static_cast<std::ptrdiff_t>(size), value);
+    std::fill(bytes_.begin() + static_cast<std::ptrdiff_t>(addr),
+              bytes_.begin() + static_cast<std::ptrdiff_t>(addr + size),
+              value);
     return true;
 }
 

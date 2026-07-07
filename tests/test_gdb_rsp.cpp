@@ -1,4 +1,5 @@
 #include "gdb_rsp.hpp"
+#include "gdb_server.hpp"
 #include "simulator.hpp"
 
 #include <cassert>
@@ -21,5 +22,6 @@ int main() {
     assert(riscv::GdbRspSession::decode_packet(packet, payload));
     assert(payload == "?");
 
+    (void)sizeof(riscv::GdbServer);
     return 0;
 }
