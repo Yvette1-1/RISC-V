@@ -140,9 +140,35 @@ int main() {
         assert(!res.ok);
     }
 
+    {
+        std::ofstream out("addr_overflow.elf", std::ios::binary | std::ios::trunc);
+        write_header(out, 1);
+        write_ph(out, 1, 0x200, 0xfffffff0u, 4u, 0x40u, 0x6u);
+        out.seekp(0x200);
+        write_u32(out, 0x33333333u);
+        out.close();
+        riscv::Memory mem(0x4000u);
+        auto res = riscv::load_elf("addr_overflow.elf", mem);
+        assert(!res.ok);
+    }
+
+    {
+        std::ofstream out("entry_outside.elf", std::ios::binary | std::ios::trunc);
+        write_header(out, 1);
+        write_ph(out, 1, 0x200, 0x2000u, 4u, 0x100u, 0x5u);
+        out.seekp(0x200);
+        write_u32(out, 0x00000013u);
+        out.close();
+        riscv::Memory mem(0x4000u);
+        auto res = riscv::load_elf("entry_outside.elf", mem);
+        assert(!res.ok);
+    }
+
     std::remove("bad_magic.elf");
     std::remove("bad_segment.elf");
     std::remove("bss.elf");
     std::remove("overlap.elf");
+    std::remove("addr_overflow.elf");
+    std::remove("entry_outside.elf");
     return 0;
 }

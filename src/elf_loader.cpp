@@ -21,7 +21,7 @@ constexpr std::uint16_t kElfMachineRiscv = 243;
 constexpr std::uint32_t kProgramHeaderLoad = 1;
 constexpr std::size_t kElf32HeaderSize = 52;
 constexpr std::size_t kElf32ProgramHeaderSize = 32;
-constexpr std::uint32_t kDefaultLoadAddress = 0x1000;
+constexpr std::size_t kMaxElfFileSize = 128u * 1024u * 1024u;
 
 struct Elf32Header {
     std::array<std::uint8_t, 16> ident{};
@@ -64,6 +64,10 @@ std::uint32_t read_u32_le(const std::vector<std::uint8_t>& bytes, std::size_t of
 }
 
 bool checked_range(std::size_t base, std::size_t length, std::size_t limit) {
+    return base <= limit && length <= limit - base;
+}
+
+bool checked_u32_range(std::uint32_t base, std::uint32_t length, std::uint32_t limit) {
     return base <= limit && length <= limit - base;
 }
 
@@ -188,6 +192,9 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     if (file_size < kElf32HeaderSize) {
         return fail("file is too small to be an ELF32 file");
     }
+    if (file_size > kMaxElfFileSize) {
+        return fail("ELF file is too large");
+    }
 
     std::vector<std::uint8_t> bytes(file_size);
     if (!input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
@@ -222,8 +229,10 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         if (!checked_range(program_header.offset, program_header.file_size, bytes.size())) {
             return fail("ELF load segment is outside file");
         }
-        if (!memory.contains(program_header.virtual_addr, program_header.memory_size)) {
-            return fail("ELF load segment is outside simulator memory");
+        if (!checked_u32_range(program_header.virtual_addr,
+                               program_header.memory_size,
+                               static_cast<std::uint32_t>(memory.size()))) {
+            return fail("ELF load segment address range overflows or exceeds simulator memory");
         }
 
         const auto segment_end = static_cast<std::uint64_t>(program_header.virtual_addr) + program_header.memory_size;
@@ -264,8 +273,16 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     if (!loaded_segment) {
         return fail("ELF has no loadable segments");
     }
-    if (!memory.contains(elf_header.entry)) {
-        return fail("ELF entry point is outside simulator memory");
+    bool entry_in_segment = false;
+    for (const auto& segment : result.segments) {
+        if (checked_u32_range(segment.vaddr, segment.mem_size, std::numeric_limits<std::uint32_t>::max()) &&
+            elf_header.entry >= segment.vaddr && elf_header.entry < segment.vaddr + segment.mem_size) {
+            entry_in_segment = true;
+            break;
+        }
+    }
+    if (!entry_in_segment) {
+        return fail("ELF entry point is outside loadable segments");
     }
 
     return result;
