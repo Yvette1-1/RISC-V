@@ -32,7 +32,8 @@ void print_menu() {
     std::cout << "  2. 进入调试器\n";
     std::cout << "  3. 查看 GDB 远程调试状态\n";
     std::cout << "  4. 查看快速示例\n";
-    std::cout << "  5. 退出\n";
+    std::cout << "  5. 运行 riscv-tests 验证\n";
+    std::cout << "  6. 退出\n";
     std::cout << "请输入选项编号：";
 }
 
@@ -44,6 +45,7 @@ void print_examples() {
     std::cout << "  pipeline              查看流水线状态与 CPI\n";
     std::cout << "  x 0x10000 32          查看 32 字节内存\n";
     std::cout << "  x 0x20000=0xdeadbeef  向内存写入 32 位数据\n";
+    std::cout << "  make rv32ui           编译 riscv-tests 的 RV32UI 套件\n";
     std::cout << "\n";
 }
 
@@ -91,7 +93,7 @@ int main(int argc, char** argv) {
         if (choice == 1) {
             const auto path = prompt_path();
             if (path.empty()) {
-                std::cout << "No path entered.\n";
+                std::cout << "未输入路径。\n";
                 continue;
             }
             load_program_with_feedback(simulator, path);
@@ -105,6 +107,11 @@ int main(int argc, char** argv) {
         } else if (choice == 4) {
             print_examples();
         } else if (choice == 5) {
+            std::cout << "\n[运行 riscv-tests]\n";
+            std::cout << "请先进入 tests\\riscv-tests\\isa 目录，然后执行：\n";
+            std::cout << "  make RISCV_PREFIX=riscv-none-elf- XLEN=32 rv32ui\n";
+            std::cout << "\n运行完成后，可回到项目根目录使用 ctest 或直接加载生成的 ELF 进行验证。\n";
+        } else if (choice == 6) {
             break;
         } else {
             std::cout << "Unknown option.\n";

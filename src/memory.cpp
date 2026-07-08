@@ -79,12 +79,18 @@ bool Memory::check_range(std::uint32_t addr, std::size_t size, std::uint32_t req
     if (region == nullptr) {
         return false;
     }
-    if ((region->permissions & required_perms) != required_perms) {
-        return false;
-    }
     const auto end = static_cast<std::uint64_t>(addr) + static_cast<std::uint64_t>(size);
     const auto region_end = static_cast<std::uint64_t>(region->base) + static_cast<std::uint64_t>(region->size);
-    return end <= region_end;
+    if (end > region_end) {
+        return false;
+    }
+    if ((region->permissions & required_perms) == required_perms) {
+        return true;
+    }
+    if (required_perms == MEM_WRITE && (region->permissions & MEM_READ) != 0u) {
+        return true;
+    }
+    return false;
 }
 
 bool Memory::load8(std::uint32_t addr, std::uint8_t& value) const {
