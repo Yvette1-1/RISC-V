@@ -239,7 +239,7 @@ DebugCommandResult Debugger::handle_command(const std::string& line) {
         return {true, false, "Reset complete"};
     }
 
-    return {true, false, "未知命令，请输入 help 查看可用命令"};
+    return {true, false, "unknown command"};
 }
 
 void Debugger::refresh_breakpoints() {

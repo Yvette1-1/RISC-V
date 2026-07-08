@@ -12,4 +12,4 @@ _start:
 
 .section .rodata
 msg:
-    .asciz "Hello, RISC-V\n"
+    .asciz "Hello, World\n"
