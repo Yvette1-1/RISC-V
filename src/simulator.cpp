@@ -1,6 +1,7 @@
 #include "simulator.hpp"
 
 #include "elf_loader.hpp"
+#include "fpu.hpp"
 #include "riscv_isa.hpp"
 
 #include <algorithm>
@@ -173,6 +174,9 @@ bool Simulator::reset() {
     pipeline_stats_ = {};
     for (auto& reg : regs_) {
         reg = 0;
+    }
+    for (auto& freg : fregs_) {
+        freg = 0;
     }
     return true;
 }
@@ -367,6 +371,24 @@ Simulator::ExecuteResult Simulator::execute_one() {
                 return ExecuteResult::Error;
             }
             break;
+        }
+        break;
+    }
+    case 0x53: {
+        const auto lhs = fregs_[decoded.rs1];
+        const auto rhs = fregs_[decoded.rs2];
+        switch (decoded.funct7) {
+        case 0x00: fregs_[decoded.rd] = f32_add(lhs, rhs); break;
+        case 0x04: fregs_[decoded.rd] = f32_sub(lhs, rhs); break;
+        case 0x08: fregs_[decoded.rd] = f32_mul(lhs, rhs); break;
+        case 0x0c: fregs_[decoded.rd] = f32_div(lhs, rhs); break;
+        case 0x2c: fregs_[decoded.rd] = f32_sqrt(lhs); break;
+        case 0x14: fregs_[decoded.rd] = f32_fmin(lhs, rhs); break;
+        case 0x15: fregs_[decoded.rd] = f32_fmax(lhs, rhs); break;
+        default:
+            last_error_ = "unsupported F extension";
+            state_ = SimulatorState::Trapped;
+            return ExecuteResult::Error;
         }
         break;
     }
@@ -587,25 +609,7 @@ Simulator::ExecuteResult Simulator::execute_one() {
     const bool control_change = next_pc != current_pc + 4;
     pc_ = next_pc;
     regs_[0] = 0;
-    pipeline_.cycle++;
-    pipeline_.wb_pc = pipeline_.mem_pc;
-    pipeline_.wb_valid = pipeline_.mem_valid;
-    pipeline_.mem_pc = pipeline_.ex_pc;
-    pipeline_.mem_valid = pipeline_.ex_valid;
-    pipeline_.ex_pc = pipeline_.id_pc;
-    pipeline_.ex_valid = pipeline_.id_valid;
-    pipeline_.id_pc = pipeline_.if_pc;
-    pipeline_.id_valid = pipeline_.if_valid;
-    pipeline_.if_pc = pc_;
-    pipeline_.if_valid = state_ != SimulatorState::Trapped && state_ != SimulatorState::Exited;
-    pipeline_stats_.cycles += 1;
-    pipeline_stats_.instructions += 1;
-    if (control_change) {
-        pipeline_stats_.flushes += 1;
-        pipeline_.if_valid = false;
-        pipeline_.id_valid = false;
-    }
-    pipeline_stats_.cpi = static_cast<double>(pipeline_stats_.cycles) / static_cast<double>(pipeline_stats_.instructions);
+    update_pipeline(current_pc, control_change);
     if (state_ != SimulatorState::Trapped) {
         state_ = SimulatorState::Loaded;
     }
@@ -732,6 +736,31 @@ const std::string& Simulator::program_path() const noexcept {
 
 const std::string& Simulator::last_error() const noexcept {
     return last_error_;
+}
+
+void Simulator::update_pipeline(std::uint32_t retired_pc, bool control_change) {
+    pipeline_.cycle += 1;
+    pipeline_stats_.cycles += 1;
+    pipeline_stats_.instructions += 1;
+    pipeline_.wb_pc = pipeline_.mem_pc;
+    pipeline_.wb_valid = pipeline_.mem_valid;
+    pipeline_.mem_pc = pipeline_.ex_pc;
+    pipeline_.mem_valid = pipeline_.ex_valid;
+    pipeline_.ex_pc = pipeline_.id_pc;
+    pipeline_.ex_valid = pipeline_.id_valid;
+    pipeline_.id_pc = pipeline_.if_pc;
+    pipeline_.id_valid = pipeline_.if_valid;
+    pipeline_.if_pc = retired_pc + 4u;
+    pipeline_.if_valid = state_ != SimulatorState::Trapped && state_ != SimulatorState::Exited;
+    if (control_change) {
+        pipeline_stats_.flushes += 1;
+        pipeline_stats_.stalls += 1;
+        pipeline_.if_valid = false;
+        pipeline_.id_valid = false;
+    }
+    if (pipeline_stats_.instructions != 0) {
+        pipeline_stats_.cpi = static_cast<double>(pipeline_stats_.cycles) / static_cast<double>(pipeline_stats_.instructions);
+    }
 }
 
 }  // namespace riscv

@@ -73,24 +73,19 @@ public:
     const std::string& last_error() const noexcept;
 
 private:
-    enum class ExecuteResult {
-        Advanced,
-        Paused,
-        Halted,
-        Error,
-        Exited,
-    };
-
+    enum class ExecuteResult { Advanced, Paused, Halted, Error, Exited };
     ExecuteResult execute_one();
     ExecuteResult handle_syscall();
     bool map_mmio();
     bool handle_mmio_store(std::uint32_t addr, std::uint32_t value, std::size_t size);
+    void update_pipeline(std::uint32_t retired_pc, bool control_change);
 
     SimulatorConfig config_;
     Memory memory_;
     SimulatorState state_ = SimulatorState::Idle;
     std::uint32_t pc_ = 0;
     std::uint32_t regs_[32]{};
+    std::uint32_t fregs_[32]{};
     std::uint32_t exit_code_ = 0;
     std::uint32_t brk_ = 0;
     std::uint32_t heap_base_ = 0;
