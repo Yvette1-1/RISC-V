@@ -94,6 +94,8 @@ private:
     std::uint32_t csr_mepc_ = 0;
     std::uint32_t csr_mcause_ = 0;
     std::uint32_t csr_mtval_ = 0;
+    std::uint32_t csr_fflags_ = 0;
+    std::uint32_t csr_frm_ = 0;
     PipelineSnapshot pipeline_{};
     PipelineStats pipeline_stats_{};
     std::vector<std::uint32_t> breakpoints_;

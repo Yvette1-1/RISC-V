@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <utility>
 
 namespace riscv {
@@ -72,6 +73,10 @@ bool Simulator::load_program(const std::string& path) {
     csr_mepc_ = 0;
     csr_mcause_ = 0;
     csr_mtval_ = 0;
+    csr_fflags_ = 0;
+    csr_frm_ = 0;
+    csr_fflags_ = 0;
+    csr_frm_ = 0;
     pipeline_ = {};
     pipeline_stats_ = {};
     last_error_.clear();
@@ -305,49 +310,217 @@ Simulator::ExecuteResult Simulator::execute_one() {
     case 0x33: {
         const auto lhs = read_reg(decoded.rs1);
         const auto rhs = read_reg(decoded.rs2);
-        switch (decoded.funct3) {
-        case 0x0:
-            if (decoded.funct7 == 0x00) write_reg(decoded.rd, lhs + rhs);
-            else if (decoded.funct7 == 0x20) write_reg(decoded.rd, lhs - rhs);
-            else if (decoded.funct7 == 0x01) write_reg(decoded.rd, static_cast<std::uint32_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::int64_t>(static_cast<std::int32_t>(rhs))));
-            else { last_error_ = "unsupported OP"; state_ = SimulatorState::Trapped; return ExecuteResult::Error; }
+        switch (decoded.funct7) {
+        case 0x00:
+            switch (decoded.funct3) {
+            case 0x0: write_reg(decoded.rd, lhs + rhs); break;
+            case 0x1: write_reg(decoded.rd, lhs << (rhs & 0x1fu)); break;
+            case 0x2: write_reg(decoded.rd, static_cast<std::uint32_t>(static_cast<std::int32_t>(lhs) < static_cast<std::int32_t>(rhs))); break;
+            case 0x3: write_reg(decoded.rd, lhs < rhs ? 1u : 0u); break;
+            case 0x4: write_reg(decoded.rd, lhs ^ rhs); break;
+            case 0x5: write_reg(decoded.rd, lhs >> (rhs & 0x1fu)); break;
+            case 0x6: write_reg(decoded.rd, lhs | rhs); break;
+            case 0x7: write_reg(decoded.rd, lhs & rhs); break;
+            default:
+                last_error_ = "unsupported OP";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
             break;
-        default:
-            if (decoded.funct7 == 0x01) {
-                switch (decoded.funct3) {
-                case 0x0: write_reg(decoded.rd, static_cast<std::uint32_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::int64_t>(static_cast<std::int32_t>(rhs)))); break;
-                case 0x1: write_reg(decoded.rd, static_cast<std::uint32_t>((static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::int64_t>(static_cast<std::int32_t>(rhs))) >> 32)); break;
-                case 0x2: write_reg(decoded.rd, static_cast<std::uint32_t>((static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::uint64_t>(rhs)) >> 32)); break;
-                case 0x3: write_reg(decoded.rd, static_cast<std::uint32_t>((static_cast<std::uint64_t>(lhs) * static_cast<std::uint64_t>(rhs)) >> 32)); break;
-                case 0x4: write_reg(decoded.rd, rhs == 0 ? 0xffffffffu : static_cast<std::uint32_t>(static_cast<std::int32_t>(lhs) / static_cast<std::int32_t>(rhs))); break;
-                case 0x5: write_reg(decoded.rd, rhs == 0 ? 0xffffffffu : lhs / rhs); break;
-                case 0x6: write_reg(decoded.rd, rhs == 0 ? lhs : static_cast<std::uint32_t>(static_cast<std::int32_t>(lhs) % static_cast<std::int32_t>(rhs))); break;
-                case 0x7: write_reg(decoded.rd, rhs == 0 ? lhs : lhs % rhs); break;
-                default:
-                    last_error_ = "unsupported M extension";
-                    state_ = SimulatorState::Trapped;
-                    return ExecuteResult::Error;
+        case 0x20:
+            switch (decoded.funct3) {
+            case 0x0: write_reg(decoded.rd, lhs - rhs); break;
+            case 0x5: write_reg(decoded.rd, static_cast<std::uint32_t>(static_cast<std::int32_t>(lhs) >> (rhs & 0x1fu))); break;
+            default:
+                last_error_ = "unsupported OP";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
+        case 0x01: {
+            switch (decoded.funct3) {
+            case 0x0: write_reg(decoded.rd, static_cast<std::uint32_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::int64_t>(static_cast<std::int32_t>(rhs)))); break;
+            case 0x1: write_reg(decoded.rd, static_cast<std::uint32_t>((static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::int64_t>(static_cast<std::int32_t>(rhs))) >> 32)); break;
+            case 0x2: write_reg(decoded.rd, static_cast<std::uint32_t>((static_cast<std::int64_t>(static_cast<std::int32_t>(lhs)) * static_cast<std::uint64_t>(rhs)) >> 32)); break;
+            case 0x3: write_reg(decoded.rd, static_cast<std::uint32_t>((static_cast<std::uint64_t>(lhs) * static_cast<std::uint64_t>(rhs)) >> 32)); break;
+            case 0x4: {
+                if (rhs == 0) {
+                    write_reg(decoded.rd, 0xffffffffu);
+                    break;
                 }
-            } else {
+                const auto slhs = static_cast<std::int32_t>(lhs);
+                const auto srhs = static_cast<std::int32_t>(rhs);
+                if (slhs == static_cast<std::int32_t>(0x80000000u) && srhs == -1) {
+                    write_reg(decoded.rd, static_cast<std::uint32_t>(slhs));
+                    break;
+                }
+                write_reg(decoded.rd, static_cast<std::uint32_t>(slhs / srhs));
+                break;
+            }
+            case 0x5: write_reg(decoded.rd, rhs == 0 ? 0xffffffffu : lhs / rhs); break;
+            case 0x6: {
+                if (rhs == 0) {
+                    write_reg(decoded.rd, lhs);
+                    break;
+                }
+                const auto slhs = static_cast<std::int32_t>(lhs);
+                const auto srhs = static_cast<std::int32_t>(rhs);
+                if (slhs == std::numeric_limits<std::int32_t>::min() && srhs == -1) {
+                    write_reg(decoded.rd, 0u);
+                    break;
+                }
+                write_reg(decoded.rd, static_cast<std::uint32_t>(slhs % srhs));
+                break;
+            }
+            case 0x7: write_reg(decoded.rd, rhs == 0 ? lhs : lhs % rhs); break;
+            default:
                 last_error_ = "unsupported OP";
                 state_ = SimulatorState::Trapped;
                 return ExecuteResult::Error;
             }
             break;
         }
+        default:
+            last_error_ = "unsupported OP";
+            state_ = SimulatorState::Trapped;
+            return ExecuteResult::Error;
+        }
         break;
     }
+    case 0x07: {
+        const auto addr = read_reg(decoded.rs1) + static_cast<std::uint32_t>(make_imm_i(inst));
+        if (decoded.funct3 != 0x2) {
+            last_error_ = "unsupported flw";
+            state_ = SimulatorState::Trapped;
+            return ExecuteResult::Error;
+        }
+        std::uint32_t value = 0;
+        if (!memory_.load32(addr, value)) {
+            last_error_ = "flw failed";
+            state_ = SimulatorState::Trapped;
+            return ExecuteResult::Error;
+        }
+        fregs_[decoded.rd] = value;
+        break;
+    }
+    case 0x27: {
+        const auto addr = read_reg(decoded.rs1) + make_imm_s(inst);
+        if (decoded.funct3 != 0x2) {
+            last_error_ = "unsupported fsw";
+            state_ = SimulatorState::Trapped;
+            return ExecuteResult::Error;
+        }
+        if (!memory_.store32(addr, fregs_[decoded.rs2])) {
+            last_error_ = "fsw failed";
+            state_ = SimulatorState::Trapped;
+            return ExecuteResult::Error;
+        }
+        break;
+    }
+    case 0x43:
+    case 0x47:
+    case 0x4b:
+    case 0x4f: {
+        const auto rs3 = (inst >> 27) & 0x1fu;
+        const auto a = fregs_[decoded.rs1];
+        const auto b = fregs_[decoded.rs2];
+        const auto c = fregs_[rs3];
+        const auto prod = f32_mul(a, b);
+        switch (decoded.opcode) {
+        case 0x43: fregs_[decoded.rd] = f32_add(prod, c); break;
+        case 0x47: fregs_[decoded.rd] = f32_sub(prod, c); break;
+        case 0x4b: fregs_[decoded.rd] = f32_sub(c, prod); break;
+        case 0x4f: fregs_[decoded.rd] = f32_sub(0u, f32_add(prod, c)); break;
+        default: break;
+        }
+        csr_fflags_ = fpu_flags();
+        break;
+    }
+    case 0x0f:
+        break;
     case 0x53: {
         const auto lhs = fregs_[decoded.rs1];
         const auto rhs = fregs_[decoded.rs2];
         switch (decoded.funct7) {
-        case 0x00: fregs_[decoded.rd] = f32_add(lhs, rhs); break;
-        case 0x04: fregs_[decoded.rd] = f32_sub(lhs, rhs); break;
-        case 0x08: fregs_[decoded.rd] = f32_mul(lhs, rhs); break;
-        case 0x0c: fregs_[decoded.rd] = f32_div(lhs, rhs); break;
-        case 0x2c: fregs_[decoded.rd] = f32_sqrt(lhs); break;
+        case 0x00: fregs_[decoded.rd] = f32_add(lhs, rhs); csr_fflags_ = fpu_flags(); break;
+        case 0x04: fregs_[decoded.rd] = f32_sub(lhs, rhs); csr_fflags_ = fpu_flags(); break;
+        case 0x08: fregs_[decoded.rd] = f32_mul(lhs, rhs); csr_fflags_ = fpu_flags(); break;
+        case 0x0c: fregs_[decoded.rd] = f32_div(lhs, rhs); csr_fflags_ = fpu_flags(); break;
+        case 0x2c: fregs_[decoded.rd] = f32_sqrt(lhs); csr_fflags_ = fpu_flags(); break;
+        case 0x10:
+            switch (decoded.funct3) {
+            case 0x0: fregs_[decoded.rd] = f32_fsgnj(lhs, rhs); break;
+            case 0x1: fregs_[decoded.rd] = f32_fsgnjn(lhs, rhs); break;
+            case 0x2: fregs_[decoded.rd] = f32_fsgnjx(lhs, rhs); break;
+            default:
+                last_error_ = "unsupported F sign";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
+        case 0x11:
+            switch (decoded.funct3) {
+            case 0x0: fregs_[decoded.rd] = f32_fsgnj(lhs, rhs); break;
+            case 0x1: fregs_[decoded.rd] = f32_fsgnjn(lhs, rhs); break;
+            case 0x2: fregs_[decoded.rd] = f32_fsgnjx(lhs, rhs); break;
+            default:
+                last_error_ = "unsupported F sign";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
         case 0x14: fregs_[decoded.rd] = f32_fmin(lhs, rhs); break;
         case 0x15: fregs_[decoded.rd] = f32_fmax(lhs, rhs); break;
+        case 0x50:
+            switch (decoded.funct3) {
+            case 0x0: write_reg(decoded.rd, f32_feq(lhs, rhs)); break;
+            case 0x1: write_reg(decoded.rd, f32_flt(lhs, rhs)); break;
+            case 0x2: write_reg(decoded.rd, f32_fle(lhs, rhs)); break;
+            default:
+                last_error_ = "unsupported F compare";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
+        case 0x60:
+            switch (decoded.rs2) {
+            case 0x0: write_reg(decoded.rd, f32_fcvt_w_s(lhs)); break;
+            case 0x1: write_reg(decoded.rd, f32_fcvt_wu_s(lhs)); break;
+            default:
+                last_error_ = "unsupported F convert";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
+        case 0x68:
+            switch (decoded.rs2) {
+            case 0x0: fregs_[decoded.rd] = f32_fcvt_s_w(read_reg(decoded.rs1)); break;
+            case 0x1: fregs_[decoded.rd] = f32_fcvt_s_wu(read_reg(decoded.rs1)); break;
+            default:
+                last_error_ = "unsupported F convert";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
+        case 0x70:
+            switch (decoded.funct3) {
+            case 0x0: write_reg(decoded.rd, f32_fmv_x_w(lhs)); break;
+            case 0x1: write_reg(decoded.rd, f32_classify(lhs)); break;
+            default:
+                last_error_ = "unsupported F move/classify";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
+        case 0x78:
+            if (decoded.funct3 == 0x0) {
+                fregs_[decoded.rd] = f32_fmv_w_x(read_reg(decoded.rs1));
+            } else {
+                last_error_ = "unsupported F move";
+                state_ = SimulatorState::Trapped;
+                return ExecuteResult::Error;
+            }
+            break;
         default:
             last_error_ = "unsupported F extension";
             state_ = SimulatorState::Trapped;
@@ -427,8 +600,9 @@ Simulator::ExecuteResult Simulator::execute_one() {
         break;
     }
     case 0x67: {
+        const auto base = read_reg(decoded.rs1);
         write_reg(decoded.rd, next_pc);
-        next_pc = (read_reg(decoded.rs1) + static_cast<std::uint32_t>(make_imm_i(inst))) & ~1u;
+        next_pc = (base + static_cast<std::uint32_t>(make_imm_i(inst))) & ~1u;
         break;
     }
     case 0x63: {
@@ -478,6 +652,9 @@ Simulator::ExecuteResult Simulator::execute_one() {
         const auto csr_addr = get_bits(inst, 31, 20);
         auto read_csr = [this](std::uint32_t csr) -> std::uint32_t {
             switch (csr) {
+            case 0x001: return csr_fflags_;
+            case 0x002: return csr_frm_;
+            case 0x003: return (csr_frm_ << 5) | (csr_fflags_ & 0x1f);
             case 0x300: return csr_mstatus_;
             case 0x305: return csr_mtvec_;
             case 0x341: return csr_mepc_;
@@ -488,6 +665,9 @@ Simulator::ExecuteResult Simulator::execute_one() {
         };
         auto write_csr = [this](std::uint32_t csr, std::uint32_t value) {
             switch (csr) {
+            case 0x001: csr_fflags_ = value & 0x1f; break;
+            case 0x002: csr_frm_ = value & 0x7; break;
+            case 0x003: csr_fflags_ = value & 0x1f; csr_frm_ = (value >> 5) & 0x7; break;
             case 0x300: csr_mstatus_ = value; break;
             case 0x305: csr_mtvec_ = value; break;
             case 0x341: csr_mepc_ = value; break;
@@ -498,6 +678,28 @@ Simulator::ExecuteResult Simulator::execute_one() {
         };
 
         switch (decoded.funct3) {
+        case 0x0: {
+            if (csr_addr == 0x001) { // fsflags
+                const auto old = csr_fflags_;
+                csr_fflags_ = decoded.rs1 & 0x1f;
+                write_reg(decoded.rd, old);
+                break;
+            }
+            if (csr_addr == 0x002) { // fsrm
+                const auto old = csr_frm_;
+                csr_frm_ = decoded.rs1 & 0x7;
+                write_reg(decoded.rd, old);
+                break;
+            }
+            if (csr_addr == 0x003) { // fscsr
+                const auto old = (csr_frm_ << 5) | (csr_fflags_ & 0x1f);
+                csr_fflags_ = decoded.rs1 & 0x1f;
+                csr_frm_ = (decoded.rs1 >> 5) & 0x7;
+                write_reg(decoded.rd, old);
+                break;
+            }
+            [[fallthrough]];
+        }
         case 0x1: { // csrrw
             const auto old = read_csr(csr_addr);
             write_csr(csr_addr, read_reg(decoded.rs1));

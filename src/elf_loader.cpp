@@ -229,9 +229,35 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     std::string error;
     if (!validate_header(header, bytes.size(), error)) return fail(error);
 
+    struct LoadableRange { std::uint64_t start = std::numeric_limits<std::uint64_t>::max(); std::uint64_t end = 0; };
+    LoadableRange range;
+    for (std::uint16_t i = 0; i < header.phnum; ++i) {
+        const auto off = static_cast<std::size_t>(header.phoff) + static_cast<std::size_t>(i) * header.phentsize;
+        const auto ph = parse_program_header(bytes, off, header.is_64);
+        if (ph.type != kProgramHeaderLoad || ph.memsz == 0) continue;
+        range.start = std::min(range.start, ph.vaddr);
+        range.end = std::max(range.end, ph.vaddr + ph.memsz);
+    }
+    if (range.start == std::numeric_limits<std::uint64_t>::max() && header.shnum != 0) {
+        for (std::uint16_t i = 0; i < header.shnum; ++i) {
+            const auto off = static_cast<std::size_t>(header.shoff) + static_cast<std::size_t>(i) * header.shentsize;
+            if (!checked_range(off, header.shentsize, bytes.size())) return fail("ELF section header is outside file");
+            const auto sh = parse_section_header(bytes, off, header.is_64);
+            if ((sh.flags & kSectionFlagAlloc) == 0u || sh.addr == 0 || sh.size == 0) continue;
+            range.start = std::min(range.start, sh.addr);
+            range.end = std::max(range.end, sh.addr + sh.size);
+        }
+    }
+
+    const auto memory_size = static_cast<std::uint64_t>(memory.size());
+    const bool fits_without_relocation =
+        range.start == std::numeric_limits<std::uint64_t>::max() ||
+        (range.end <= memory_size);
+    const std::uint64_t relocate_base = fits_without_relocation ? 0u : range.start;
+
     ElfLoadResult result;
     result.ok = true;
-    result.entry_point = static_cast<std::uint32_t>(header.entry);
+    result.entry_point = static_cast<std::uint32_t>(header.entry - relocate_base);
 
     bool loaded = false;
 
@@ -239,7 +265,7 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         const auto off = static_cast<std::size_t>(header.phoff) + static_cast<std::size_t>(i) * header.phentsize;
         const auto ph = parse_program_header(bytes, off, header.is_64);
         if (ph.type != kProgramHeaderLoad) continue;
-        if (!load_region(memory, bytes, ph.vaddr, ph.offset, ph.filesz, ph.memsz, program_permissions(ph.flags), "elf_segment", result)) return fail("failed to load ELF program segment");
+        if (!load_region(memory, bytes, ph.vaddr - relocate_base, ph.offset, ph.filesz, ph.memsz, program_permissions(ph.flags), "elf_segment", result)) return fail("failed to load ELF program segment");
         loaded = true;
     }
 
@@ -250,23 +276,24 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
             const auto sh = parse_section_header(bytes, off, header.is_64);
             if ((sh.flags & kSectionFlagAlloc) == 0u || sh.addr == 0 || sh.size == 0) continue;
             const auto perms = section_permissions(sh.flags);
+            const auto mapped_addr = static_cast<std::uint32_t>(sh.addr);
             if (sh.type == kSectionTypeNobits) {
-                if (!memory.contains(static_cast<std::uint32_t>(sh.addr), static_cast<std::size_t>(sh.size))) return fail("ELF NOBITS section is outside simulator memory");
-                const MemoryRegion region{static_cast<std::uint32_t>(sh.addr), static_cast<std::uint32_t>(sh.size), static_cast<std::uint32_t>(MEM_READ | MEM_WRITE | perms), "elf_section"};
+                if (!memory.contains(mapped_addr, static_cast<std::size_t>(sh.size))) return fail("ELF NOBITS section is outside simulator memory");
+                const MemoryRegion region{mapped_addr, static_cast<std::uint32_t>(sh.size), static_cast<std::uint32_t>(MEM_READ | MEM_WRITE | perms), "elf_section"};
                 if (!memory.map_region(region)) return fail("failed to map ELF NOBITS section");
-                if (!memory.fill(static_cast<std::uint32_t>(sh.addr), 0, static_cast<std::size_t>(sh.size))) return fail("failed to zero-fill ELF NOBITS section");
-                result.segments.push_back({static_cast<std::uint32_t>(sh.addr), static_cast<std::uint32_t>(sh.size), 0, perms, static_cast<std::uint32_t>(sh.offset)});
+                if (!memory.fill(mapped_addr, 0, static_cast<std::size_t>(sh.size))) return fail("failed to zero-fill ELF NOBITS section");
+                result.segments.push_back({mapped_addr, static_cast<std::uint32_t>(sh.size), 0, perms, static_cast<std::uint32_t>(sh.offset)});
                 loaded = true;
                 continue;
             }
             if (sh.type != kSectionTypeProgbits) continue;
-            if (!load_region(memory, bytes, sh.addr, sh.offset, sh.size, sh.size, perms, "elf_section", result)) return fail("failed to copy ELF section into memory");
+            if (!load_region(memory, bytes, mapped_addr, sh.offset, sh.size, sh.size, perms, "elf_section", result)) return fail("failed to copy ELF section into memory");
             loaded = true;
         }
     }
 
     if (!loaded) return fail("ELF has no loadable content");
-    if (!memory.contains(static_cast<std::uint32_t>(header.entry), 4)) return fail("ELF entry point is outside simulator memory");
+    if (!memory.contains(static_cast<std::uint32_t>(header.entry - relocate_base), 4)) return fail("ELF entry point is outside simulator memory");
     return result;
 }
 

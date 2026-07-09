@@ -90,4 +90,13 @@ if(BUILD_TESTS)
     add_executable(riscv_gdb_rsp_test tests/test_gdb_rsp.cpp)
     target_link_libraries(riscv_gdb_rsp_test PRIVATE riscv_core)
     add_test(NAME riscv_gdb_rsp_test COMMAND riscv_gdb_rsp_test)
+
+    add_executable(riscv_fpu_test tests/test_fpu.cpp)
+    target_link_libraries(riscv_fpu_test PRIVATE riscv_core)
+    add_test(NAME riscv_fpu_test COMMAND riscv_fpu_test)
+
+    add_executable(riscv_rv32uf_test tests/test_rv32uf.cpp)
+    target_compile_definitions(riscv_rv32uf_test PRIVATE RV32UF_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/riscv-tests/isa")
+    target_link_libraries(riscv_rv32uf_test PRIVATE riscv_core)
+    add_test(NAME riscv_rv32uf_test COMMAND riscv_rv32uf_test)
 endif()
