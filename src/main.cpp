@@ -6,9 +6,15 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -32,7 +38,7 @@ void print_menu() {
     std::cout << "  2. 进入调试器\n";
     std::cout << "  3. 查看 GDB 远程调试状态\n";
     std::cout << "  4. 查看快速示例\n";
-    std::cout << "  5. 运行 riscv-tests 验证\n";
+    std::cout << "  5. 运行完整 riscv-tests 验证\n";
     std::cout << "  6. 退出\n";
     std::cout << "请输入选项编号：";
 }
@@ -46,6 +52,8 @@ void print_examples() {
     std::cout << "  x 0x10000 32          查看 32 字节内存\n";
     std::cout << "  x 0x20000=0xdeadbeef  向内存写入 32 位数据\n";
     std::cout << "  make rv32ui           编译 riscv-tests 的 RV32UI 套件\n";
+    std::cout << "  make rv32um           编译 riscv-tests 的 RV32UM 套件\n";
+    std::cout << "  make rv32uf           编译 riscv-tests 的 RV32UF 套件\n";
     std::cout << "\n";
 }
 
@@ -65,6 +73,260 @@ bool load_program_with_feedback(riscv::Simulator& simulator, const std::string& 
     std::cout << "Failed to load program: " << path << '\n';
     std::cout << "Reason: " << simulator.last_error() << '\n';
     return false;
+}
+
+bool run_command(const std::string& command, const std::string& cwd) {
+#ifdef _WIN32
+    const std::string full = "cd /d \"" + cwd + "\" && " + command;
+#else
+    const std::string full = "cd \"" + cwd + "\" && " + command;
+#endif
+    return std::system(full.c_str()) == 0;
+}
+
+struct RiscvTestCase {
+    std::string suite;
+    std::filesystem::path path;
+};
+
+std::vector<RiscvTestCase> collect_riscv_tests(const std::filesystem::path& dir, const std::string& prefix) {
+    std::vector<RiscvTestCase> cases;
+    if (!std::filesystem::exists(dir)) {
+        return cases;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        const auto name = entry.path().filename().string();
+        if (name.rfind(prefix, 0) == 0 && !entry.path().has_extension()) {
+            cases.push_back({prefix, entry.path()});
+        }
+    }
+    std::sort(cases.begin(), cases.end(), [](const RiscvTestCase& a, const RiscvTestCase& b) {
+        return a.path < b.path;
+    });
+    return cases;
+}
+
+struct CaseRunResult {
+    enum class Kind { Pass, Fail, Timeout } kind = Kind::Fail;
+    std::string detail;
+    std::uint64_t elapsed_ms = 0;
+    std::vector<std::uint32_t> pc_trace;
+};
+
+std::string format_pc(std::uint32_t pc) {
+    std::ostringstream oss;
+    oss << "0x" << std::hex << pc;
+    return oss.str();
+}
+
+std::string format_trace(const std::vector<std::uint32_t>& trace) {
+    if (trace.empty()) {
+        return "[]";
+    }
+    std::ostringstream oss;
+    oss << '[';
+    for (std::size_t i = 0; i < trace.size(); ++i) {
+        if (i != 0) oss << " -> ";
+        oss << format_pc(trace[i]);
+    }
+    oss << ']';
+    return oss.str();
+}
+
+CaseRunResult run_case(const std::filesystem::path& elf_path, riscv::Simulator& simulator, std::size_t max_steps = 100'000, std::size_t progress_interval = 10'000) {
+    CaseRunResult result;
+    const auto started = std::chrono::steady_clock::now();
+    if (!simulator.load_program(elf_path.string())) {
+        result.detail = "load failed: " + simulator.last_error();
+        result.kind = CaseRunResult::Kind::Fail;
+        result.elapsed_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+        return result;
+    }
+
+    std::vector<std::uint32_t> trace;
+    trace.reserve(8);
+    std::size_t steps = 0;
+    while (steps < max_steps) {
+        trace.push_back(simulator.pc());
+        if (trace.size() > 8) {
+            trace.erase(trace.begin());
+        }
+        if (progress_interval != 0 && steps != 0 && (steps % progress_interval) == 0) {
+            const auto status = simulator.status();
+            std::cout << "[PROGRESS] " << elf_path.filename().string()
+                      << " steps=" << steps
+                      << " pc=" << format_pc(status.pc)
+                      << " state=" << static_cast<int>(status.state)
+                      << '\n';
+        }
+
+        const auto st = simulator.state();
+        if (st == riscv::SimulatorState::Exited || st == riscv::SimulatorState::Halted) {
+            result.kind = CaseRunResult::Kind::Pass;
+            break;
+        }
+        if (!simulator.step()) {
+            const auto status = simulator.status();
+            result.kind = CaseRunResult::Kind::Fail;
+            result.detail = "state=" + std::to_string(static_cast<int>(status.state)) +
+                            ", pc=" + format_pc(status.pc) +
+                            ", error=" + status.message;
+            break;
+        }
+        ++steps;
+        const auto status = simulator.status();
+        if (status.state == riscv::SimulatorState::Exited || status.state == riscv::SimulatorState::Halted) {
+            result.kind = CaseRunResult::Kind::Pass;
+            break;
+        }
+        if (status.state == riscv::SimulatorState::Paused) {
+            result.kind = CaseRunResult::Kind::Timeout;
+            result.detail = "timeout after " + std::to_string(max_steps) + " steps, state=" + std::to_string(static_cast<int>(status.state)) +
+                            ", pc=" + format_pc(status.pc) +
+                            ", error=" + status.message +
+                            ", trace=" + format_trace(trace);
+            break;
+        }
+    }
+
+    if (result.kind == CaseRunResult::Kind::Fail && result.detail.empty()) {
+        const auto status = simulator.status();
+        result.detail = "state=" + std::to_string(static_cast<int>(status.state)) +
+                        ", pc=" + format_pc(status.pc) +
+                        ", error=" + status.message;
+    }
+    if (steps >= max_steps && result.kind != CaseRunResult::Kind::Pass) {
+        const auto status = simulator.status();
+        result.kind = CaseRunResult::Kind::Timeout;
+        result.detail = "timeout after " + std::to_string(max_steps) + " steps, state=" + std::to_string(static_cast<int>(status.state)) +
+                        ", pc=" + format_pc(status.pc) +
+                        ", error=" + status.message +
+                        ", trace=" + format_trace(trace);
+    }
+
+    result.elapsed_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
+    result.pc_trace = std::move(trace);
+    return result;
+}
+
+bool run_riscv_suite(const std::string& suite_name) {
+    const std::string project_root = "D:/1-RISC-V/RISC-V";
+    const std::string isa_dir = project_root + "/tests/riscv-tests/isa";
+    const std::string make_cmd = "make RISCV_PREFIX=riscv-none-elf- XLEN=32 " + suite_name;
+
+    std::cout << "\n============================================================\n";
+    std::cout << "[" << suite_name << "]\n";
+    std::cout << "============================================================\n";
+
+    if (!run_command(make_cmd, isa_dir)) {
+        std::cout << "[BUILD] FAIL  " << suite_name << " (make failed)\n";
+        return false;
+    }
+
+    const auto tests = collect_riscv_tests(isa_dir, suite_name + "-p-");
+    if (tests.empty()) {
+        std::cout << "[DISCOVERY] FAIL  no ELF files found for " << suite_name << "\n";
+        return false;
+    }
+
+    riscv::Simulator simulator({});
+    std::size_t passed = 0;
+    std::size_t failed = 0;
+    std::size_t timed_out = 0;
+    for (const auto& test : tests) {
+        std::cout << "[RUN]     " << test.path.filename().string() << '\n';
+        const auto r = run_case(test.path, simulator);
+        switch (r.kind) {
+        case CaseRunResult::Kind::Pass:
+            ++passed;
+            std::cout << "[PASS]    " << test.path.filename().string() << "  (" << r.elapsed_ms << " ms)\n";
+            break;
+        case CaseRunResult::Kind::Timeout:
+            ++timed_out;
+            std::cout << "[TIMEOUT] " << test.path.filename().string() << "  (" << r.elapsed_ms << " ms, " << r.detail << ")\n";
+            break;
+        case CaseRunResult::Kind::Fail:
+            ++failed;
+            std::cout << "[FAIL]    " << test.path.filename().string() << "  (" << r.elapsed_ms << " ms, " << r.detail << ")\n";
+            break;
+        }
+    }
+
+    const auto total = tests.size();
+    const auto percent = total == 0 ? 0 : (passed * 100 / total);
+    std::cout << "[SUMMARY] " << suite_name << ": pass=" << passed << ", fail=" << failed << ", timeout=" << timed_out << ", total=" << total << " (" << percent << "%)\n";
+    return passed == total;
+}
+
+bool run_riscv_tests_suite() {
+    const std::vector<std::string> suites = {"rv32ui", "rv32um", "rv32uf"};
+    std::size_t total_cases = 0;
+    std::size_t total_passed = 0;
+    bool ok = true;
+
+    std::cout << "\n============================================================\n";
+    std::cout << "完整 riscv-tests 套件回归\n";
+    std::cout << "============================================================\n";
+
+    for (const auto& suite : suites) {
+        const std::string project_root = "D:/1-RISC-V/RISC-V";
+        const std::string isa_dir = project_root + "/tests/riscv-tests/isa";
+        const std::string make_cmd = "make RISCV_PREFIX=riscv-none-elf- XLEN=32 " + suite;
+        std::cout << "\n[BUILD] " << suite << '\n';
+        if (!run_command(make_cmd, isa_dir)) {
+            std::cout << "[BUILD] FAIL  " << suite << '\n';
+            ok = false;
+            continue;
+        }
+
+        const auto tests = collect_riscv_tests(isa_dir, suite + "-p-");
+        if (tests.empty()) {
+            std::cout << "[DISCOVERY] FAIL  no ELF files found for " << suite << '\n';
+            ok = false;
+            continue;
+        }
+
+        std::cout << "[RUN] " << suite << " (" << tests.size() << " cases)\n";
+        riscv::Simulator simulator({});
+        std::size_t passed = 0;
+        std::size_t failed = 0;
+        std::size_t timed_out = 0;
+        for (const auto& test : tests) {
+            std::cout << "[RUN]     " << test.path.filename().string() << '\n';
+            const auto r = run_case(test.path, simulator);
+            switch (r.kind) {
+            case CaseRunResult::Kind::Pass:
+                ++passed;
+                std::cout << "[PASS]    " << test.path.filename().string() << '\n';
+                break;
+            case CaseRunResult::Kind::Timeout:
+                ++timed_out;
+                std::cout << "[TIMEOUT] " << test.path.filename().string() << "  (" << r.detail << ")\n";
+                break;
+            case CaseRunResult::Kind::Fail:
+                ++failed;
+                std::cout << "[FAIL]    " << test.path.filename().string() << "  (" << r.detail << ")\n";
+                break;
+            }
+        }
+
+        total_cases += tests.size();
+        total_passed += passed;
+        if (passed != tests.size()) {
+            ok = false;
+        }
+        std::cout << "[SUMMARY] " << suite << ": pass=" << passed << ", fail=" << failed << ", timeout=" << timed_out << ", total=" << tests.size() << '\n';
+    }
+
+    const auto percent = total_cases == 0 ? 0 : (total_passed * 100 / total_cases);
+    std::cout << "\n============================================================\n";
+    std::cout << "[TOTAL] " << total_passed << "/" << total_cases << " passed (" << percent << "%)\n";
+    std::cout << "============================================================\n";
+    std::cout << "提示：rv32uf 若失败，优先查看是否为浮点结果、NaN 传播或 FPU 标志位问题。\n";
+    return ok;
 }
 
 }  // namespace
@@ -107,10 +369,10 @@ int main(int argc, char** argv) {
         } else if (choice == 4) {
             print_examples();
         } else if (choice == 5) {
-            std::cout << "\n[运行 riscv-tests]\n";
-            std::cout << "请先进入 tests\\riscv-tests\\isa 目录，然后执行：\n";
-            std::cout << "  make RISCV_PREFIX=riscv-none-elf- XLEN=32 rv32ui\n";
-            std::cout << "\n运行完成后，可回到项目根目录使用 ctest 或直接加载生成的 ELF 进行验证。\n";
+            const bool ok = run_riscv_tests_suite();
+            if (!ok) {
+                std::cout << "\n部分 riscv-tests 套件编译失败，请检查工具链或测试目录。\n";
+            }
         } else if (choice == 6) {
             break;
         } else {
