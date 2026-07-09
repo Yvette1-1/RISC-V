@@ -4,6 +4,7 @@
 #include "simulator.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace riscv {
@@ -18,8 +19,14 @@ public:
     bool running() const noexcept;
 
 private:
+    enum class PacketKind { Ack, Nack, Data, Empty, Invalid };
+    struct Packet {
+        PacketKind kind = PacketKind::Invalid;
+        std::string payload;
+    };
+
     void serve();
-    static std::string recv_line(int sock);
+    static std::optional<Packet> recv_packet(int sock);
     static bool send_all(int sock, const std::string& data);
 
     Simulator& simulator_;
