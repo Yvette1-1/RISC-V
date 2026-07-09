@@ -22,6 +22,10 @@ target_include_directories(riscv_core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+if(WIN32)
+    target_link_libraries(riscv_core PUBLIC ws2_32)
+endif()
+
 add_executable(riscv_sim
     src/main.cpp
 )
