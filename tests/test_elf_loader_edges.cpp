@@ -273,6 +273,30 @@ int main() {
     }
 
     {
+        std::ofstream out("addr_overflow.elf", std::ios::binary | std::ios::trunc);
+        write_elf32_header(out, 1, 0);
+        write_elf32_ph(out, 1, 0x200, 0xfffffff0u, 4u, 0x40u, 0x6u);
+        write_padding(out, 0x200);
+        write_u32(out, 0x33333333u);
+        out.close();
+        riscv::Memory mem(0x4000u);
+        auto res = riscv::load_elf("addr_overflow.elf", mem);
+        assert(!res.ok);
+    }
+
+    {
+        std::ofstream out("entry_outside.elf", std::ios::binary | std::ios::trunc);
+        write_elf32_header(out, 1, 0);
+        write_elf32_ph(out, 1, 0x200, 0x2000u, 4u, 0x100u, 0x5u);
+        write_padding(out, 0x200);
+        write_u32(out, 0x00000013u);
+        out.close();
+        riscv::Memory mem(0x4000u);
+        auto res = riscv::load_elf("entry_outside.elf", mem);
+        assert(!res.ok);
+    }
+
+    {
         std::ofstream out("section32.elf", std::ios::binary | std::ios::trunc);
         write_elf32_header(out, 0, 2, 0, 0x300);
         write_padding(out, 0x300);
@@ -326,6 +350,8 @@ int main() {
     std::remove("bad_segment.elf");
     std::remove("bss.elf");
     std::remove("overlap.elf");
+    std::remove("addr_overflow.elf");
+    std::remove("entry_outside.elf");
     std::remove("section32.elf");
     std::remove("elf64_ph.elf");
     std::remove("elf64_sh.elf");
