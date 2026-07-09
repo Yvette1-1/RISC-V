@@ -14,11 +14,17 @@ enum MemoryPermission : std::uint32_t {
     MEM_EXEC = 1u << 2,
 };
 
+enum class MemoryRegionKind {
+    Ram,
+    Mmio,
+};
+
 struct MemoryRegion {
     std::uint32_t base = 0;
     std::uint32_t size = 0;
     std::uint32_t permissions = MEM_READ | MEM_WRITE;
     std::string name;
+    MemoryRegionKind kind = MemoryRegionKind::Ram;
 };
 
 class Memory {

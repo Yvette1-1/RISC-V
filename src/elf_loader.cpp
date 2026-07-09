@@ -30,6 +30,7 @@ constexpr std::size_t kElf32ProgramHeaderSize = 32;
 constexpr std::size_t kElf64ProgramHeaderSize = 56;
 constexpr std::size_t kElf32SectionHeaderSize = 40;
 constexpr std::size_t kElf64SectionHeaderSize = 64;
+constexpr std::size_t kMaxElfFileSize = 128u * 1024u * 1024u;
 
 struct ElfHeader {
     std::array<std::uint8_t, 16> ident{};
@@ -84,6 +85,10 @@ bool checked_range(std::uint64_t base, std::uint64_t length, std::size_t limit) 
     return base <= limit && length <= static_cast<std::uint64_t>(limit) - base;
 }
 
+bool checked_u32_range(std::uint64_t base, std::uint64_t length, std::uint32_t limit) {
+    return base <= limit && length <= static_cast<std::uint64_t>(limit) - base;
+}
+
 ElfLoadResult fail(std::string message) {
     ElfLoadResult result;
     result.error = std::move(message);
@@ -92,7 +97,9 @@ ElfLoadResult fail(std::string message) {
 
 ElfHeader parse_header(const std::vector<std::uint8_t>& bytes) {
     ElfHeader header;
-    for (std::size_t i = 0; i < header.ident.size(); ++i) header.ident[i] = bytes[i];
+    for (std::size_t i = 0; i < header.ident.size(); ++i) {
+        header.ident[i] = bytes[i];
+    }
     header.is_64 = header.ident[4] == kElfClass64;
     header.machine = read_u16_le(bytes, 18);
     header.version = read_u32_le(bytes, 20);
@@ -174,18 +181,62 @@ std::uint32_t section_permissions(std::uint64_t flags) {
 }
 
 bool validate_header(const ElfHeader& header, std::size_t file_size, std::string& error) {
-    if (!std::equal(kElfMagic.begin(), kElfMagic.end(), header.ident.begin())) { error = "invalid ELF magic"; return false; }
-    if (header.ident[4] != kElfClass32 && header.ident[4] != kElfClass64) { error = "unsupported ELF class"; return false; }
-    if (header.ident[5] != kElfDataLittleEndian) { error = "only little-endian ELF is supported"; return false; }
-    if (header.ident[6] != kElfVersionCurrent || header.version != kElfVersionCurrent) { error = "unsupported ELF version"; return false; }
-    if (header.machine != kElfMachineRiscv) { error = "ELF machine is not RISC-V"; return false; }
-    if (header.ehsize < (header.is_64 ? kElf64HeaderSize : kElf32HeaderSize)) { error = "ELF header is too small"; return false; }
-    if (header.phnum == 0 && header.shnum == 0) { error = "ELF has no loadable content"; return false; }
-    if (header.phnum != 0 && header.phentsize < (header.is_64 ? kElf64ProgramHeaderSize : kElf32ProgramHeaderSize)) { error = "ELF program header entry is too small"; return false; }
-    if (header.shnum != 0 && header.shentsize < (header.is_64 ? kElf64SectionHeaderSize : kElf32SectionHeaderSize)) { error = "ELF section header entry is too small"; return false; }
-    if (header.phnum != 0 && !checked_range(header.phoff, static_cast<std::uint64_t>(header.phentsize) * header.phnum, file_size)) { error = "ELF program header table is outside file"; return false; }
-    if (header.shnum != 0 && !checked_range(header.shoff, static_cast<std::uint64_t>(header.shentsize) * header.shnum, file_size)) { error = "ELF section header table is outside file"; return false; }
+    if (!std::equal(kElfMagic.begin(), kElfMagic.end(), header.ident.begin())) {
+        error = "invalid ELF magic";
+        return false;
+    }
+    if (header.ident[4] != kElfClass32 && header.ident[4] != kElfClass64) {
+        error = "unsupported ELF class";
+        return false;
+    }
+    if (header.ident[5] != kElfDataLittleEndian) {
+        error = "only little-endian ELF is supported";
+        return false;
+    }
+    if (header.ident[6] != kElfVersionCurrent || header.version != kElfVersionCurrent) {
+        error = "unsupported ELF version";
+        return false;
+    }
+    if (header.machine != kElfMachineRiscv) {
+        error = "ELF machine is not RISC-V";
+        return false;
+    }
+    if (header.ehsize < (header.is_64 ? kElf64HeaderSize : kElf32HeaderSize)) {
+        error = "ELF header is too small";
+        return false;
+    }
+    if (header.phnum == 0 && header.shnum == 0) {
+        error = "ELF has no loadable content";
+        return false;
+    }
+    if (header.phnum != 0 && header.phentsize < (header.is_64 ? kElf64ProgramHeaderSize : kElf32ProgramHeaderSize)) {
+        error = "ELF program header entry is too small";
+        return false;
+    }
+    if (header.shnum != 0 && header.shentsize < (header.is_64 ? kElf64SectionHeaderSize : kElf32SectionHeaderSize)) {
+        error = "ELF section header entry is too small";
+        return false;
+    }
+    if (header.phnum != 0 && !checked_range(header.phoff, static_cast<std::uint64_t>(header.phentsize) * header.phnum, file_size)) {
+        error = "ELF program header table is outside file";
+        return false;
+    }
+    if (header.shnum != 0 && !checked_range(header.shoff, static_cast<std::uint64_t>(header.shentsize) * header.shnum, file_size)) {
+        error = "ELF section header table is outside file";
+        return false;
+    }
     return true;
+}
+
+bool overlaps_loaded_segment(const ElfLoadResult& result, std::uint64_t addr, std::uint64_t size) {
+    const auto end = addr + size;
+    for (const auto& segment : result.segments) {
+        const auto existing_end = static_cast<std::uint64_t>(segment.vaddr) + segment.mem_size;
+        if (!(end <= segment.vaddr || existing_end <= addr)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool load_region(Memory& memory,
@@ -200,14 +251,46 @@ bool load_region(Memory& memory,
     if (mem_size == 0) return true;
     if (file_size > mem_size) return false;
     if (!checked_range(offset, file_size, bytes.size())) return false;
+    if (!checked_u32_range(addr, mem_size, static_cast<std::uint32_t>(memory.size()))) return false;
+    if (overlaps_loaded_segment(result, addr, mem_size)) return false;
+
     const auto vaddr = static_cast<std::uint32_t>(addr);
-    if (!memory.contains(vaddr, static_cast<std::size_t>(mem_size))) return false;
-    const MemoryRegion region{vaddr, static_cast<std::uint32_t>(mem_size), static_cast<std::uint32_t>(MEM_READ | MEM_WRITE | permissions), name};
+    const MemoryRegion region{
+        vaddr,
+        static_cast<std::uint32_t>(mem_size),
+        static_cast<std::uint32_t>(MEM_READ | MEM_WRITE | permissions),
+        name
+    };
     if (!memory.map_region(region)) return false;
-    if (file_size != 0 && !memory.store_bytes(vaddr, bytes.data() + static_cast<std::size_t>(offset), static_cast<std::size_t>(file_size))) return false;
-    if (mem_size > file_size && !memory.fill(vaddr + static_cast<std::uint32_t>(file_size), 0, static_cast<std::size_t>(mem_size - file_size))) return false;
-    result.segments.push_back({vaddr, static_cast<std::uint32_t>(mem_size), static_cast<std::uint32_t>(file_size), permissions, static_cast<std::uint32_t>(offset)});
+
+    if (file_size != 0 &&
+        !memory.store_bytes(vaddr, bytes.data() + static_cast<std::size_t>(offset), static_cast<std::size_t>(file_size))) {
+        return false;
+    }
+    if (mem_size > file_size &&
+        !memory.fill(vaddr + static_cast<std::uint32_t>(file_size), 0, static_cast<std::size_t>(mem_size - file_size))) {
+        return false;
+    }
+
+    result.segments.push_back({
+        vaddr,
+        static_cast<std::uint32_t>(mem_size),
+        static_cast<std::uint32_t>(file_size),
+        permissions,
+        static_cast<std::uint32_t>(offset)
+    });
     return true;
+}
+
+bool entry_in_loaded_segment(const ElfLoadResult& result, std::uint32_t entry) {
+    for (const auto& segment : result.segments) {
+        if (checked_u32_range(segment.vaddr, segment.mem_size, std::numeric_limits<std::uint32_t>::max()) &&
+            entry >= segment.vaddr &&
+            entry < segment.vaddr + segment.mem_size) {
+            return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -222,14 +305,25 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     const auto file_size = static_cast<std::size_t>(file_size_pos);
     input.seekg(0, std::ios::beg);
 
+    if (file_size < kElf32HeaderSize) return fail("file is too small to be an ELF file");
+    if (file_size > kMaxElfFileSize) return fail("ELF file is too large");
+
     std::vector<std::uint8_t> bytes(file_size);
-    if (!input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) return fail("failed to read ELF file contents");
+    if (!input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()))) {
+        return fail("failed to read ELF file contents");
+    }
 
     const auto header = parse_header(bytes);
     std::string error;
     if (!validate_header(header, bytes.size(), error)) return fail(error);
+    if (header.entry > std::numeric_limits<std::uint32_t>::max()) {
+        return fail("ELF entry point exceeds RV32 address space");
+    }
 
-    struct LoadableRange { std::uint64_t start = std::numeric_limits<std::uint64_t>::max(); std::uint64_t end = 0; };
+    struct LoadableRange {
+        std::uint64_t start = std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t end = 0;
+    };
     LoadableRange range;
     for (std::uint16_t i = 0; i < header.phnum; ++i) {
         const auto off = static_cast<std::size_t>(header.phoff) + static_cast<std::size_t>(i) * header.phentsize;
@@ -238,10 +332,13 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
         range.start = std::min(range.start, ph.vaddr);
         range.end = std::max(range.end, ph.vaddr + ph.memsz);
     }
+
     if (range.start == std::numeric_limits<std::uint64_t>::max() && header.shnum != 0) {
         for (std::uint16_t i = 0; i < header.shnum; ++i) {
             const auto off = static_cast<std::size_t>(header.shoff) + static_cast<std::size_t>(i) * header.shentsize;
-            if (!checked_range(off, header.shentsize, bytes.size())) return fail("ELF section header is outside file");
+            if (!checked_range(off, header.shentsize, bytes.size())) {
+                return fail("ELF section header is outside file");
+            }
             const auto sh = parse_section_header(bytes, off, header.is_64);
             if ((sh.flags & kSectionFlagAlloc) == 0u || sh.addr == 0 || sh.size == 0) continue;
             range.start = std::min(range.start, sh.addr);
@@ -260,40 +357,54 @@ ElfLoadResult load_elf(const std::string& path, Memory& memory) {
     result.entry_point = static_cast<std::uint32_t>(header.entry - relocate_base);
 
     bool loaded = false;
-
     for (std::uint16_t i = 0; i < header.phnum; ++i) {
         const auto off = static_cast<std::size_t>(header.phoff) + static_cast<std::size_t>(i) * header.phentsize;
         const auto ph = parse_program_header(bytes, off, header.is_64);
         if (ph.type != kProgramHeaderLoad) continue;
-        if (!load_region(memory, bytes, ph.vaddr - relocate_base, ph.offset, ph.filesz, ph.memsz, program_permissions(ph.flags), "elf_segment", result)) return fail("failed to load ELF program segment");
+        if (!load_region(memory,
+                         bytes,
+                         ph.vaddr - relocate_base,
+                         ph.offset,
+                         ph.filesz,
+                         ph.memsz,
+                         program_permissions(ph.flags),
+                         "elf_segment",
+                         result)) {
+            return fail("failed to load ELF program segment");
+        }
         loaded = true;
     }
 
     if (!loaded && header.shnum != 0) {
         for (std::uint16_t i = 0; i < header.shnum; ++i) {
             const auto off = static_cast<std::size_t>(header.shoff) + static_cast<std::size_t>(i) * header.shentsize;
-            if (!checked_range(off, header.shentsize, bytes.size())) return fail("ELF section header is outside file");
+            if (!checked_range(off, header.shentsize, bytes.size())) {
+                return fail("ELF section header is outside file");
+            }
             const auto sh = parse_section_header(bytes, off, header.is_64);
             if ((sh.flags & kSectionFlagAlloc) == 0u || sh.addr == 0 || sh.size == 0) continue;
+
             const auto perms = section_permissions(sh.flags);
             const auto mapped_addr = static_cast<std::uint32_t>(sh.addr);
             if (sh.type == kSectionTypeNobits) {
-                if (!memory.contains(mapped_addr, static_cast<std::size_t>(sh.size))) return fail("ELF NOBITS section is outside simulator memory");
-                const MemoryRegion region{mapped_addr, static_cast<std::uint32_t>(sh.size), static_cast<std::uint32_t>(MEM_READ | MEM_WRITE | perms), "elf_section"};
-                if (!memory.map_region(region)) return fail("failed to map ELF NOBITS section");
-                if (!memory.fill(mapped_addr, 0, static_cast<std::size_t>(sh.size))) return fail("failed to zero-fill ELF NOBITS section");
-                result.segments.push_back({mapped_addr, static_cast<std::uint32_t>(sh.size), 0, perms, static_cast<std::uint32_t>(sh.offset)});
+                if (!load_region(memory, bytes, sh.addr, 0, 0, sh.size, perms, "elf_section", result)) {
+                    return fail("failed to map ELF NOBITS section");
+                }
                 loaded = true;
                 continue;
             }
             if (sh.type != kSectionTypeProgbits) continue;
-            if (!load_region(memory, bytes, mapped_addr, sh.offset, sh.size, sh.size, perms, "elf_section", result)) return fail("failed to copy ELF section into memory");
+            if (!load_region(memory, bytes, mapped_addr, sh.offset, sh.size, sh.size, perms, "elf_section", result)) {
+                return fail("failed to copy ELF section into memory");
+            }
             loaded = true;
         }
     }
 
     if (!loaded) return fail("ELF has no loadable content");
-    if (!memory.contains(static_cast<std::uint32_t>(header.entry - relocate_base), 4)) return fail("ELF entry point is outside simulator memory");
+    if (!entry_in_loaded_segment(result, result.entry_point)) {
+        return fail("ELF entry point is outside loadable content");
+    }
     return result;
 }
 

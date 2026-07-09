@@ -16,5 +16,15 @@ int main() {
     assert(memory.load8(0x1000u, v8) && v8 == 0x12u);
     assert(memory.load16(0x1002u, v16) && v16 == 0x3456u);
     assert(memory.load32(0x1004u, v32) && v32 == 0x89abcdefu);
+    assert(memory.regions().size() == 1);
+    assert(memory.regions()[0].kind == riscv::MemoryRegionKind::Ram);
+
+    assert(memory.map_region({0x2000u, 0x100u, riscv::MEM_READ | riscv::MEM_WRITE, "uart", riscv::MemoryRegionKind::Mmio}));
+    const auto* mmio = memory.region_at(0x2000u);
+    assert(mmio != nullptr);
+    assert(mmio->kind == riscv::MemoryRegionKind::Mmio);
+    assert(memory.is_mapped(0x2000u));
+    assert(!memory.map_region({0x2080u, 0x100u, riscv::MEM_READ, "overlap"}));
+
     return 0;
 }

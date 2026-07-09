@@ -1,27 +1,54 @@
-# RISC-V 模拟器与调试器基础框架
+# RISC-V 模拟器与调试器
 
-这是一个用于实现题目 04 的最小工程骨架，当前目标是先搭好可扩展框架，再逐步补齐 ELF、指令集、syscall 和调试器能力。
+面向 RISC-V 的指令集模拟器与交互式调试器，支持 RV32I + M 扩展、ELF32 程序加载、虚拟内存映射、系统调用等。
 
 ## 目录结构
 
-- `src/`：核心源码
-- `include/`：公共头文件
-- `tests/`：最小测试
-- `examples/`：测试程序样例预留
-- `docs/`：设计文档、流程图、指令表预留
+```
+├── include/       公共头文件
+├── src/           核心源码
+├── tests/         测试程序
+├── docs/          设计文档
+├── examples/      示例程序
+```
 
-## 当前已具备
+## 编译
 
-- 可编译的 C++17 工程骨架
-- 内存模块最小实现
-- 模拟器与调试器入口
-- ELF 加载器占位接口
-- 最小 smoke test
+```bash
+cmake -S . -B build
+cmake --build build
+```
 
-## 下一步建议
+## 运行
 
-1. 补齐 RV32I 指令解码与执行
-2. 接入 ELF32/ELF64 解析
-3. 完成 syscall：`write/read/exit/brk`
-4. 增加断点、单步、寄存器/内存查看
-5. 再考虑五级流水线、F 扩展或 GDB RSP
+```bash
+build\riscv_sim.exe                # 启动主菜单
+#1. 装载并运行 ELF 程序
+#2. 进入调试器
+#3. 查看 GDB 远程调试状态
+#4. 查看快速示例
+#5. 运行 riscv-tests 验证
+#6. 退出
+```
+
+## 调试器命令
+
+进入调试 Shell（菜单选 2）后可用：
+
+| 命令 | 说明 |
+|---|---|
+| `help` | 命令列表 |
+| `regs` / `info r` | 32 寄存器 + PC |
+| `step [N]` / `s [N]` | 单步 N 条 |
+| `continue` / `c` | 继续运行 |
+| `demo` | 一键演示（断点→寄存器→单步→内存） |
+| `pipeline` | 五级流水线 + CPI 统计 |
+| `x <addr> [count]` | 内存查看 |
+| `x <addr>=<value>` | 内存写入 |
+| `b <addr>` | 设断点 |
+| `info b` | 断点列表 |
+| `del <n>` | 删断点 |
+| `trace on/off` | 指令跟踪 |
+| `reset` | 重置 |
+| `quit` | 退出 |
+
