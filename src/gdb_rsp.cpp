@@ -11,6 +11,15 @@ std::string GdbRspSession::handle_packet(const std::string& payload) {
     if (payload == "?") {
         return "S05";
     }
+    if (payload == "qSupported") {
+        return "PacketSize=4000;swbreak+;hwbreak+;vContSupported+";
+    }
+    if (payload == "vMustReplyEmpty") {
+        return "";
+    }
+    if (payload == "vCont?") {
+        return "vCont;c;s";
+    }
     if (payload == "g") {
         return read_registers();
     }
@@ -57,10 +66,8 @@ std::string GdbRspSession::handle_packet(const std::string& payload) {
         if (!parse_hex_u32(payload.substr(comma1 + 1, comma2 - comma1 - 1), addr)) {
             return "E01";
         }
-        return set ? (simulator_.add_breakpoint(addr) ? "OK" : "OK") : (simulator_.remove_breakpoint(addr) ? "OK" : "OK");
-    }
-    if (payload == "qSupported") {
-        return "PacketSize=4000;swbreak+";
+        const bool ok = set ? simulator_.add_breakpoint(addr) : simulator_.remove_breakpoint(addr);
+        return ok ? "OK" : "E02";
     }
     if (payload == "k" || payload == "D") {
         return "OK";
