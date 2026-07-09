@@ -1,4 +1,5 @@
 #include "debugger.hpp"
+#include "gdb_server.hpp"
 #include "riscv_config.hpp"
 #include "simulator.hpp"
 
@@ -12,8 +13,10 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -337,6 +340,7 @@ int main(int argc, char** argv) {
 
     riscv::SimulatorConfig config;
     riscv::Simulator simulator(config);
+    std::unique_ptr<riscv::GdbServer> gdb_server;
 
     if (argc > 1) {
         load_program_with_feedback(simulator, argv[1]);
@@ -364,8 +368,17 @@ int main(int argc, char** argv) {
             std::cout << "输入 help 可查看全部命令，输入 demo 可一键演示完整流程。\n";
             debugger.repl();
         } else if (choice == 3) {
-            std::cout << "\nGDB 远程调试功能已集成到模拟器后端。\n";
-            std::cout << "可在需要时使用远程客户端连接到配置端口。\n";
+            if (!gdb_server) {
+                gdb_server = std::make_unique<riscv::GdbServer>(simulator);
+            }
+            if (gdb_server->running()) {
+                std::cout << "\nGDB server already listening on port 1234.\n";
+            } else if (gdb_server->start(1234)) {
+                std::cout << "\nGDB server listening on port 1234.\n";
+                std::cout << "Use GDB: target remote :1234\n";
+            } else {
+                std::cout << "\nFailed to start GDB server on port 1234.\n";
+            }
         } else if (choice == 4) {
             print_examples();
         } else if (choice == 5) {
@@ -374,6 +387,9 @@ int main(int argc, char** argv) {
                 std::cout << "\n部分 riscv-tests 套件编译失败，请检查工具链或测试目录。\n";
             }
         } else if (choice == 6) {
+            if (gdb_server) {
+                gdb_server->stop();
+            }
             break;
         } else {
             std::cout << "Unknown option.\n";
